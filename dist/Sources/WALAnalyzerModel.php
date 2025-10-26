@@ -163,14 +163,11 @@ function insert_dbip_country(&$inserts) {
 }
 
 /**
- * insert_log
+ * Insert web access log entries and log the execution time.
  *
- * @param array $inserts
- *
- * @return null
- *
+ * @param array $inserts Array of rows to insert
  */
-function insert_log(&$inserts) {
+function insert_log($inserts) {
 	global $smcFunc, $modSettings;
 
 	if (empty($inserts))
@@ -179,103 +176,203 @@ function insert_log(&$inserts) {
 	// Temporarily disable query check...  Takes a MASSIVE amount of time on large inserts...
 	$modSettings['disableQueryCheck'] = '1';
 
-	$smcFunc['db_insert']('insert',
-		'{db_prefix}wala_web_access_log',
-		array('ip_packed' => 'inet', 'client' => 'string-10', 'requestor' => 'string-10', 'raw_datetime' => 'string-32', 'raw_tz' => 'string-6', 'request' => 'string-255', 'status' => 'int', 'size' => 'int', 'referrer' => 'string-255', 'useragent' => 'string-255', 'ip_disp' => 'string-42', 'request_type' => 'string-15', 'agent' => 'string-25', 'browser_ver' => 'string-25', 'datetime' => 'int'),
-		$inserts,
-		array('id_entry'),
+	$totalStart = microtime(true);
+	$totalCount = count($inserts);
+	$chunkSize = 100;
+	$chunkNum  = 0;
+
+	foreach (array_chunk($inserts, $chunkSize) as $chunk) {
+		$chunkNum++;
+		$start = microtime(true);
+
+		smf_db_insert('insert',
+			'{db_prefix}wala_web_access_log',
+			array(
+				'ip_packed'     => 'inet',
+				'client'        => 'string-10',
+				'requestor'     => 'string-10',
+				'raw_datetime'  => 'string-32',
+				'raw_tz'        => 'string-6',
+				'request'       => 'string-255',
+				'status'        => 'int',
+				'size'          => 'int',
+				'referrer'      => 'string-255',
+				'useragent'     => 'string-255',
+				'ip_disp'       => 'string-42',
+				'request_type'  => 'string-15',
+				'agent'         => 'string-25',
+				'browser_ver'   => 'string-25',
+				'datetime'      => 'int',
+			),
+			$chunk,
+			array('id_entry')
+		);
+	}
+
+	$totalElapsed = microtime(true) - $totalStart;
+	logDbInsertTime('wala_web_access_log', $totalElapsed, $totalCount);
+
+	$smcFunc['db_query']('', 'TRUNCATE {db_prefix}wala_web_access_log',
+		array()
 	);
+	$start = microtime(true);
+
+	smf_db_insert_multi('insert',
+		'{db_prefix}wala_web_access_log',
+		array(
+			'ip_packed'     => 'inet',
+			'client'        => 'string-10',
+			'requestor'     => 'string-10',
+			'raw_datetime'  => 'string-32',
+			'raw_tz'        => 'string-6',
+			'request'       => 'string-255',
+			'status'        => 'int',
+			'size'          => 'int',
+			'referrer'      => 'string-255',
+			'useragent'     => 'string-255',
+			'ip_disp'       => 'string-42',
+			'request_type'  => 'string-15',
+			'agent'         => 'string-25',
+			'browser_ver'   => 'string-25',
+			'datetime'      => 'int',
+		),
+		$inserts,
+		array('id_entry')
+	);
+
+	$elapsed = microtime(true) - $start;
+	logDbInsertTime('wala_web_access_log', $elapsed, count($inserts));
+	$smcFunc['db_query']('', 'TRUNCATE {db_prefix}wala_web_access_log',
+		array()
+	);
+	$start = microtime(true);
+
+	smf_db_insert_mulbti('insert',
+		'{db_prefix}wala_web_access_log',
+		array(
+			'ip_packed'     => 'inet',
+			'client'        => 'string-10',
+			'requestor'     => 'string-10',
+			'raw_datetime'  => 'string-32',
+			'raw_tz'        => 'string-6',
+			'request'       => 'string-255',
+			'status'        => 'int',
+			'size'          => 'int',
+			'referrer'      => 'string-255',
+			'useragent'     => 'string-255',
+			'ip_disp'       => 'string-42',
+			'request_type'  => 'string-15',
+			'agent'         => 'string-25',
+			'browser_ver'   => 'string-25',
+			'datetime'      => 'int',
+		),
+		$inserts,
+		array('id_entry')
+	);
+
+	$elapsed = microtime(true) - $start;
+	logDbInsertTime('wala_web_access_log', $elapsed, count($inserts));
 }
+
+/**
+ * Helper to record or print timing info.
+ */
+function logDbInsertTime($table, $seconds, $count) {
+	$perRow = $count ? ($seconds / $count) : 0;
+	$formatted = sprintf(
+		"[DB] Inserted %d rows into %s in %.4f sec (%.6f sec/row)\n",
+		$count, $table, $seconds, $perRow
+	);
+	// You can change this to file_put_contents or integrate with your logger
+	echo $formatted;
+}
+
 
 /**
  * get_asns
  *
- * @params inet min IP
- * @params inet max IP
+ * Fetch IP ranges and ASNs between a given min/max packed IP range.
  *
- * @return array result
- *
+ * @param string $min_ip_packed Binary (inet_pton) lower bound
+ * @param string $max_ip_packed Binary (inet_pton) upper bound
+ * @return array Array of ['ip_from_packed' => binary, 'ip_to_packed' => binary, 'output' => string]
  */
 function get_asns($min_ip_packed, $max_ip_packed) {
-	global $smcFunc, $db_type;
-
-	$min_hex = bin2hex($min_ip_packed);
-	$min_length = strlen($min_ip_packed);
-	$min_disp = inet_ntop($min_ip_packed);
-	$max_hex = bin2hex($max_ip_packed);
-	$max_length = strlen($max_ip_packed);
-	$max_disp = inet_ntop($max_ip_packed);
-
-	if ($db_type == 'postgresql')
-		$sql = 'SELECT ip_from_packed, ip_to_packed, asn FROM {db_prefix}wala_dbip_asn WHERE ip_to_packed >= \'' . $min_disp. '\' AND ip_from_packed <= \'' . $max_disp . '\' ORDER BY ip_from_packed';
-	else {
-		if ($min_length == $max_length) {
-			$sql = 'SELECT ip_from_packed, ip_to_packed, asn FROM {db_prefix}wala_dbip_asn WHERE ip_to_packed >= UNHEX(\'' . $min_hex . '\') AND ip_from_packed <= UNHEX(\'' . $max_hex . '\') AND LENGTH(ip_from_packed) = ' . $max_length . ' ORDER BY ip_from_packed';
-		}
-		else {
-			// mixed ipv4 & ipv6
-			$sql = 'SELECT ip_from_packed, ip_to_packed, asn FROM {db_prefix}wala_dbip_asn WHERE (ip_to_packed >= UNHEX(\'' . $min_hex . '\') && (LENGTH(ip_from_packed) = ' . $min_length. ')) OR (ip_from_packed <=  UNHEX(\'' . $max_hex . '\') && (LENGTH(ip_to_packed) = ' . $max_length . ')) ORDER BY LENGTH(ip_from_packed), ip_from_packed';
-		}
-	}
-	$result = $smcFunc['db_query']('', $sql);
-
-	// Under SMF, PG & MySQL behave differently with inet types.  MySQL reads binary, but wants a display upon insert.
-	// PG always reads & writes display.
-	// WALA uses binary on reads, so needs to xlate pg on reads here.
-	$all_rows = array();
-	while ($row = $smcFunc['db_fetch_assoc']($result)) {
-		if ($db_type == 'postgresql') {
-			$row['ip_from_packed'] = inet_pton($row['ip_from_packed']);
-			$row['ip_to_packed'] = inet_pton($row['ip_to_packed']);
-		}
-		$all_rows[] = $row;
-	}
-	return $all_rows;
+	return fetch_range_data('asn', $min_ip_packed, $max_ip_packed);
 }
 
 /**
  * get_countries
  *
- * @params inet min IP
- * @params inet max IP
+ * Fetch IP ranges and countries between a given min/max packed IP range.
  *
- * @return array result
- *
+ * @param string $min_ip_packed Binary (inet_pton) lower bound
+ * @param string $max_ip_packed Binary (inet_pton) upper bound
+ * @return array Array of ['ip_from_packed' => binary, 'ip_to_packed' => binary, 'output' => string]
  */
 function get_countries($min_ip_packed, $max_ip_packed) {
+	return fetch_range_data('country', $min_ip_packed, $max_ip_packed);
+}
+
+/**
+ * fetch_range_data
+ *
+ * Fetch IP ranges between a given min/max packed IP range.
+ *
+ * @param string $min_ip_packed Binary (inet_pton) lower bound
+ * @param string $max_ip_packed Binary (inet_pton) upper bound
+ * @return array Array of ['ip_from_packed' => binary, 'ip_to_packed' => binary, 'output' => string]
+ */
+function fetch_range_data($type, $min_ip_packed, $max_ip_packed) {
 	global $smcFunc, $db_type;
 
 	$min_hex = bin2hex($min_ip_packed);
-	$min_length = strlen($min_ip_packed);
-	$min_disp = inet_ntop($min_ip_packed);
 	$max_hex = bin2hex($max_ip_packed);
-	$max_length = strlen($max_ip_packed);
+	$min_disp = inet_ntop($min_ip_packed);
 	$max_disp = inet_ntop($max_ip_packed);
+	$min_length = strlen($min_ip_packed);
+	$max_length = strlen($max_ip_packed);
 
-	if ($db_type == 'postgresql')
-		$sql = 'SELECT ip_from_packed, ip_to_packed, country FROM {db_prefix}wala_dbip_country WHERE ip_to_packed >= \'' . $min_disp. '\' AND ip_from_packed <= \'' . $max_disp . '\' ORDER BY ip_from_packed';
-	else {
-		if ($min_length == $max_length) {
-			$sql = 'SELECT ip_from_packed, ip_to_packed, country FROM {db_prefix}wala_dbip_country WHERE ip_to_packed >= UNHEX(\'' . $min_hex . '\') AND ip_from_packed <= UNHEX(\'' . $max_hex . '\') AND LENGTH(ip_from_packed) = ' . $max_length . ' ORDER BY ip_from_packed';
-		}
-		else {
-			// mixed ipv4 & ipv6
-			$sql = 'SELECT ip_from_packed, ip_to_packed, country FROM {db_prefix}wala_dbip_country WHERE (ip_to_packed >= UNHEX(\'' . $min_hex . '\') && (LENGTH(ip_from_packed) = ' . $min_length. ')) OR (ip_from_packed <=  UNHEX(\'' . $max_hex . '\') && (LENGTH(ip_to_packed) = ' . $max_length . ')) ORDER BY LENGTH(ip_from_packed), ip_from_packed';
-		}
+	// Build SQL depending on DB engine
+	if ($db_type === 'postgresql') {
+		$sql = '
+			SELECT ip_from_packed, ip_to_packed, ' . $type . ' AS output
+			FROM {db_prefix}wala_dbip_' . $type . '
+			WHERE ip_to_packed >= \'' . $min_disp . '\'
+				AND ip_from_packed <= \'' . $max_disp . '\'
+			ORDER BY ip_to_packed';
+	} else {
+		// MySQL (VARBINARY)
+		$sql = '
+			SELECT ip_from_packed, ip_to_packed, ' . $type . ' AS output
+			FROM {db_prefix}wala_dbip_' . $type . '
+			WHERE ip_to_packed >= UNHEX(\'' . $min_hex . '\')
+				AND ip_from_packed <= UNHEX(\'' . $max_hex . '\')
+				AND LENGTH(ip_from_packed) = ' . $max_length . '
+			ORDER BY ip_to_packed';
 	}
+	var_dump($sql);
+
+	$start = microtime(true);
+
 	$result = $smcFunc['db_query']('', $sql);
 
+	$total = microtime(true) - $start;
+	printf("Qeury took %.4f seconds\n", $total);
 	// Under SMF, PG & MySQL behave differently with inet types.  MySQL reads binary, but wants a display upon insert.
 	// PG always reads & writes display.
 	// WALA uses binary on reads, so needs to xlate pg on reads here.
-	$all_rows = array();
+
+	$all_rows = [];
 	while ($row = $smcFunc['db_fetch_assoc']($result)) {
-		if ($db_type == 'postgresql') {
+		if ($db_type === 'postgresql') {
 			$row['ip_from_packed'] = inet_pton($row['ip_from_packed']);
-			$row['ip_to_packed'] = inet_pton($row['ip_to_packed']);
+			$row['ip_to_packed']   = inet_pton($row['ip_to_packed']);
 		}
 		$all_rows[] = $row;
 	}
+
+	$smcFunc['db_free_result']($result);
 	return $all_rows;
 }
 
@@ -375,7 +472,14 @@ function get_member_ips() {
 	else
 		$sql = 'SELECT ip_packed, real_name FROM {db_prefix}wala_members ORDER BY LENGTH(ip_packed), ip_packed ASC';
 
+	var_dump($sql);
+
+	$start = microtime(true);
+
 	$result = $smcFunc['db_query']('', $sql);
+
+	$total = microtime(true) - $start;
+	printf("Qeury took %.4f seconds\n", $total);
 
 	// Under SMF, PG & MySQL behave differently with inet types.  MySQL reads binary, but wants a display upon insert.
 	// PG always reads & writes display.
@@ -532,6 +636,7 @@ function update_wala_members($member_info) {
 function get_web_access_log($offset, $limit) {
 	global $smcFunc, $db_type;
 
+	$start = microtime(true);
 	// pg properly sorts ip with ipv4 first, ipv6 next... mysql doesn't, and we don't want ipv6 & ipv4 all mixed together...
 	if ($db_type == 'postgresql')
 		$sql = 'SELECT ip_packed, id_entry FROM {db_prefix}wala_web_access_log ORDER BY ip_packed, id_entry LIMIT ' . $limit . ' OFFSET ' .$offset;
@@ -539,25 +644,399 @@ function get_web_access_log($offset, $limit) {
 		$sql = 'SELECT ip_packed, id_entry FROM {db_prefix}wala_web_access_log ORDER BY LENGTH(ip_packed), ip_packed, id_entry LIMIT ' . $limit . ' OFFSET ' .$offset;
 
 	$result = $smcFunc['db_query']('', $sql);
-	$all_rows = array();
+	$output = array();
 	while ($row = $smcFunc['db_fetch_assoc']($result)) {
 		if ($db_type == 'postgresql') {
 			$row['ip_packed'] = inet_pton($row['ip_packed']);
 		}
-		$all_rows[] = $row;
+		$output[] = $row;
 	}
- 	return $all_rows;
+
+	return $output;
 }
 
 /**
- * update_web_access_log
+ * Batch updates web access log entries in groups of 100, using string concatenation.
  *
- * @params array $log_info
- *
+ * @param array $entries Array of associative arrays with keys:
+ *   - id_entry
+ *   - asn
+ *   - country
+ *   - username
  */
-function update_web_access_log($log_info) {
-	global $smcFunc, $db_type;
+function update_web_access_log2(array $entries) {
+	global $smcFunc;
 
-	$sql = 'UPDATE {db_prefix}wala_web_access_log SET asn = \'' . $log_info['asn'] . '\', country = \'' . $log_info['country'] . '\', username = \'' . $log_info['username'] . '\' WHERE id_entry = ' . $log_info['id_entry'];
-	$result = $smcFunc['db_query']('', $sql);
+	if (empty($entries))
+		return;
+
+	$batch_size = 100;
+	$count = 0;
+
+	$sql_cases_asn = '';
+	$sql_cases_country = '';
+	$sql_cases_username = '';
+	$sql_ids = '';
+
+	foreach ($entries as $row) {
+		$id = (int)$row['id_entry'];
+		$asn = $smcFunc['db_escape_string']($row['asn']);
+		$country = $smcFunc['db_escape_string']($row['country']);
+		$username = $smcFunc['db_escape_string']($row['username']);
+
+		$sql_cases_asn .= " WHEN $id THEN '$asn'";
+		$sql_cases_country .= " WHEN $id THEN '$country'";
+		$sql_cases_username .= " WHEN $id THEN '$username'";
+		$sql_ids .= $id . ',';
+
+		$count++;
+
+		// Every 100 entries, execute batch
+		if ($count % $batch_size === 0) {
+			$sql = '
+				UPDATE {db_prefix}wala_web_access_log
+				SET
+					asn = CASE id_entry' . $sql_cases_asn . ' END,
+					country = CASE id_entry' . $sql_cases_country . ' END,
+					username = CASE id_entry' . $sql_cases_username . ' END
+				WHERE id_entry IN (' . rtrim($sql_ids, ',') . ')';
+
+			$smcFunc['db_query']('', $sql);
+
+			// Reset for next batch
+			$sql_cases_asn = '';
+			$sql_cases_country = '';
+			$sql_cases_username = '';
+			$sql_ids = '';
+		}
+	}
+
+	// Handle remainder
+	if ($sql_ids !== '') {
+		$sql = '
+			UPDATE {db_prefix}wala_web_access_log
+			SET
+				asn = CASE id_entry' . $sql_cases_asn . ' END,
+				country = CASE id_entry' . $sql_cases_country . ' END,
+				username = CASE id_entry' . $sql_cases_username . ' END
+			WHERE id_entry IN (' . rtrim($sql_ids, ',') . ')';
+
+		$smcFunc['db_query']('', $sql);
+	}
+}
+
+/**
+ * Base class for web access log update errors.
+ */
+class WebAccessLogUpdateException extends Exception {
+	public $context;
+
+	public function __construct($message, array $context = [], $code = 0, Throwable $previous = null) {
+		parent::__construct($message, $code, $previous);
+		$this->context = $context;
+	}
+
+	public function __toString() {
+		$str = __CLASS__ .': ' . ($this->code === 0 ? '' : '[' . $this->code . '] ') . $this->message;
+		foreach ($this->context as $k => $ctx) {
+			if (is_scalar($ctx)) {
+				$str .= "\n\n" . $k . ': ' . $ctx;
+			} elseif ($k === 'params') {
+				$str .= "\n\n" . debugBindParams($ctx[0], $ctx[1]);
+			} elseif ($k === 'sql') {
+				$str .= "\n\n" . interpolateQuery($ctx[0], $ctx[1]);
+			}
+		}
+
+		return $str;
+	}
+}
+
+class WebAccessLogPrepareException extends WebAccessLogUpdateException {}
+class WebAccessLogExecuteException extends WebAccessLogUpdateException {}
+
+/**
+ * Batch updates web access log entries in groups of 100 using string concatenation and reusable prepared statements.
+ *
+ * @param array $entries Array of associative arrays with keys:
+ *   - id_entry
+ *   - asn
+ *   - country
+ *   - username
+ */
+function update_web_access_log(array $entries) {
+	global $db_connection, $db_prefix;
+
+	if (empty($entries))
+		return;
+
+	$count = 0;
+	$batch_size = 100;
+
+	$params = array_fill(0, $batch_size * 7, null);
+	$types = str_repeat('ii', $batch_size);
+	$types .= str_repeat('is', $batch_size);
+	$types .= str_repeat('is', $batch_size);
+	$types .= str_repeat('i', $batch_size);
+
+	$sql_cases = str_repeat(' WHEN ? THEN ?', $batch_size);
+	$sql_ids = str_repeat('?,', $batch_size);
+
+	$sql = '
+		UPDATE ' .  $db_prefix . 'wala_web_access_log
+		SET
+			asn = CASE id_entry' . $sql_cases . ' END,
+			country = CASE id_entry' . $sql_cases . ' END,
+			username = CASE id_entry' . $sql_cases . ' END
+		WHERE id_entry IN (' . rtrim($sql_ids, ',') . ')';
+	$stmt_100 = $db_connection->prepare($sql);
+
+	if (!$stmt_100) {
+		throw new WebAccessLogPrepareException('Prepare failed for main batch', [
+			'error' => $db_connection->error,
+			'batch_size' => $batch_size,
+			'sql' => $sql,
+		]);
+	}
+
+	for ($i = 0, $n = count($entries); $i < $n; $i++) {
+		$asn_index = $count * 2;
+		$country_index = $count * 2 + $batch_size * 2;
+		$username_index = $count * 2 + $batch_size * 4;
+		$id_index = $count + $batch_size * 6;
+		$count++;
+		$id = (int)$entries[$i]['id_entry'];
+		$asn = $entries[$i]['asn'];
+		$country = $entries[$i]['country'];
+		$username = $entries[$i]['username'];
+
+		$params[$asn_index] = $id;
+		$params[$asn_index + 1] = $asn;
+		$params[$country_index] = $id;
+		$params[$country_index + 1] = $country;
+		$params[$username_index] = $id;
+		$params[$username_index + 1] = $username;
+		$params[$id_index] = $id;
+
+		// When we reach a batch of 100 entries, execute
+		if ($count === $batch_size) {
+			$count = 0;
+			if (!$stmt_100->bind_param($types, ...$params)) {
+				throw new WebAccessLogExecuteException('bind_param failed', [
+					'error' => $stmt_100->error,
+					'batch_size' => $batch_size,
+					'current_batch' => ($i + 1) % $batch_size,
+					'current_iteration' => $i,
+					'sql' => $sql,
+					'params' => [$types, $params],
+				]);
+			}
+
+			if (!$stmt_100->execute()) {
+				throw new WebAccessLogExecuteException('Execute failed for main batch', [
+					'error' => $stmt_100->error,
+					'batch_size' => $batch_size,
+					'current_batch' => ($i + 1) % $batch_size,
+					'current_iteration' => $i,
+					'sql' => [$sql, $params],
+					'params' => [$types, $params],
+				]);
+			}
+		}
+	}
+
+	// Handle remainder (last batch < 100)
+	if ($count > 0) {
+		$types_remainder = str_repeat('ii', $count);
+		$types_remainder .= str_repeat('is', $count);
+		$types_remainder .= str_repeat('is', $count);
+		$types_remainder .= str_repeat('i', $count);
+
+		$sql_cases_r = str_repeat(' WHEN ? THEN ?', $count);
+		$sql_ids_r = rtrim(str_repeat('?,', $count), ',');
+
+		$sql_last = '
+			UPDATE ' .  $db_prefix . 'wala_web_access_log
+			SET
+				asn = CASE id_entry' . $sql_cases_r . ' END,
+				country = CASE id_entry' . $sql_cases_r . ' END,
+				username = CASE id_entry' . $sql_cases_r . ' END
+			WHERE id_entry IN (' . $sql_ids_r . ')';
+
+		$stmt_last = $db_connection->prepare($sql_last);
+
+		$asn_block = array_slice($params, 0, $count * 2);
+		$country_block = array_slice($params, $batch_size * 2, $count * 2);
+		$username_block = array_slice($params, $batch_size * 4, $count * 2);
+		$id_block = array_slice($params, $batch_size * 6, $count);
+
+		$trimmed = array_merge($asn_block, $country_block, $username_block, $id_block);
+
+		if (!$stmt_last->bind_param($types_remainder, ...$trimmed)) {
+			throw new WebAccessLogExecuteException('bind_param failed', [
+				'error' => $stmt_last->error,
+				'batch_size' => $batch_size,
+				'current_batch' => ($i + 1) % $batch_size,
+				'current_iteration' => $i,
+				'sql' => $sql_last,
+				'params' => [$types_remainder, $trimmed],
+			]);
+		}
+
+		if (!$stmt_last->execute()) {
+			throw new WebAccessLogExecuteException('Execute failed for main batch', [
+				'error' => $stmt_last->error,
+				'batch_size' => $batch_size,
+				'current_batch' => ($i + 1) % $batch_size,
+				'current_iteration' => $i,
+				'sql' => [$sql_last, $trimmed],
+				'params' => [$types_remainder, $trimmed],
+			]);
+		}
+		$stmt_last->close();
+	}
+
+	if ($stmt_100)
+		$stmt_100->close();
+}
+/**
+ * Batch insert/update (upsert) web access log entries using
+ * INSERT ... ON DUPLICATE KEY UPDATE.
+ *
+ * @param array $entries Array of associative arrays:
+ *   - id_entry
+ *   - asn
+ *   - country
+ *   - username
+ */
+function upsert_web_access_log(array $entries) {
+	global $db_connection, $db_prefix;
+
+	if (empty($entries))
+		return;
+
+	$batch_size = 100;
+	$batch = [];
+
+	foreach ($entries as $entry) {
+		$batch[] = $entry;
+		if (count($batch) >= $batch_size) {
+			executeUpsertBatch($db_connection, $db_prefix, $batch);
+			$batch = [];
+		}
+	}
+
+	// handle remainder
+	if (!empty($batch)) {
+		executeUpsertBatch($db_connection, $db_prefix, $batch);
+	}
+}
+
+/**
+ * Executes a single upsert batch.
+ */
+function executeUpsertBatch(mysqli $db, string $prefix, array $batch) {
+	$placeholders = [];
+	$params = [];
+	$types = '';
+
+	foreach ($batch as $row) {
+		$placeholders[] = '(?,?,?,?)';
+		$types .= 'iiss'; // id=int, asn=int, country=string, username=string
+		$params[] = (int)$row['id_entry'];
+		$params[] = (int)$row['asn'];
+		$params[] = $row['country'];
+		$params[] = $row['username'];
+	}
+
+	$sql = '
+		INSERT INTO ' . $prefix . 'wala_web_access_log (id_entry, asn, country, username)
+		VALUES ' . implode(',', $placeholders) . '
+		ON DUPLICATE KEY UPDATE
+			asn = VALUES(asn),
+			country = VALUES(country),
+			username = VALUES(username)';
+
+	$stmt = $db->prepare($sql);
+	if (!$stmt) {
+		throw new WebAccessLogPrepareException('Prepare failed for upsert', [
+			'error' => $db->error,
+			'sql' => $sql
+		]);
+	}
+
+	if (!$stmt->bind_param($types, ...$params)) {
+		throw new WebAccessLogExecuteException('bind_param failed for upsert', [
+			'error' => $stmt->error,
+			'types' => $types,
+			'sample_params' => array_slice($params, 0, 8)
+		]);
+	}
+
+	if (!$stmt->execute()) {
+		throw new WebAccessLogExecuteException('Execute failed for upsert', [
+			'error' => $stmt->error,
+			'sql' => $sql
+		]);
+	}
+
+	$stmt->close();
+}
+
+/**
+ * Debug function: shows parameter values and their types
+ *
+ * @param string $types  MySQLi bind_param type string, e.g. 'ississ'
+ * @param array  $params Array of parameter values
+ */
+function debugBindParams(string $types, $params) {
+    $n = strlen($types);
+    $str = '';
+    if ($n !== count($params)) {
+        $str .= "⚠️ Warning: types length ($n) does not match params count (" . count($params) . ")\n";
+    }
+
+    $str .= "=== Debug Bind Params ===\n";
+    for ($i = 0; $i < min($n, count($params)); $i++) {
+        $typeChar = $types[$i];
+        $value = $params[$i];
+
+        switch ($typeChar) {
+            case 'i': $typeName = 'integer'; break;
+            case 'd': $typeName = 'double'; break;
+            case 's': $typeName = 'string'; break;
+            case 'b': $typeName = 'blob'; break;
+            default:  $typeName = 'unknown'; break;
+        }
+
+        $str .= "Param #$i: value=" . var_export($value, true) . ", type='$typeChar' ($typeName)\n";
+    }
+    return $str . "=========================\n";
+}
+
+/**
+ * Interpolate bound parameters into a SQL string for debug purposes.
+ *
+ * WARNING: Do not execute the result — this is for logging only!
+ *
+ * @param string $query SQL with ? placeholders
+ * @param array  $params Parameters bound to the statement
+ * @return string
+ */
+function interpolateQuery($query, $params) {
+    $escapedParams = array_map(function ($param) {
+        if (is_null($param)) return 'NULL';
+        if (is_numeric($param)) return $param;
+        return "'" . addslashes($param) . "'";
+    }, $params);
+
+    $parts = explode('?', $query);
+    $rebuilt = '';
+    foreach ($parts as $i => $part) {
+        $rebuilt .= $part;
+        if (isset($escapedParams[$i])) {
+            $rebuilt .= $escapedParams[$i];
+        }
+    }
+    return $rebuilt;
 }

@@ -441,13 +441,15 @@ function wala_prep() {
 		$issues = true;
 
 	foreach ($file_parts as $file_part) {
-		$chunk = file_get_contents($file_part);
-		if ($chunk === false)
+		$fp_in = @fopen($file_part, 'rb');
+		if ($fp_in === false) {
 			$issues = true;
-		else
-			if (@fwrite($final_file, $chunk) === false)
-				$issues = true;
-		// Clean up after ourselves either way
+			continue;
+		}
+		if (@stream_copy_to_stream($fp_in, $final_file) === false) {
+			$issues = true;
+		}
+		@fclose($fp_in);
 		@unlink($file_part);
 	}
 
@@ -829,7 +831,7 @@ function wala_memb_attr() {
 		start_transaction();
 		foreach ($members AS $member_info) {
 			$member_info['asn'] = get_asn($member_info['ip_packed']);
-			$member_info['country'] = get_country($member_info['ip_packed']);
+			$member_info['country'] = binary_search_data($member_info['ip_packed']);
 			update_wala_members($member_info);
 		}
 		commit();
@@ -890,9 +892,11 @@ function wala_log_attr() {
 	require_once($sourcedir . '/WALAnalyzerModel.php');
 
 	if (!$issues) {
+    $gstart = microtime(true);
 		// How many chunks total?  Not too big...
 		// Even a small chunk of users, sorted by IP, can retrieve a large # of asn/country rows
 		$reccount = count_web_access_log();
+    var_dump(microtime(true) - $gstart);
 		$commit_rec_count = ceil($reccount/20);
 		if ($commit_rec_count > 5000)
 			$commit_rec_count = 5000;
@@ -901,45 +905,98 @@ function wala_log_attr() {
 		$offset = $index * $commit_rec_count;
 		$limit = $commit_rec_count;
 		$log = get_web_access_log($offset, $limit);
-		$min_ip_packed_1 = $log[0]['ip_packed'];
-		$max_ip_packed_1 = end($log)['ip_packed'];
-		load_member_cache($min_ip_packed_1, $max_ip_packed_1);
+    var_dump(microtime(true) - $gstart);
 
-		// If jumping from ipv4 to ipv6, split 'em...
-		// Range can be just too big...
-		if (strlen($min_ip_packed_1) == strlen($max_ip_packed_1)) {
-			load_asn_cache($min_ip_packed_1, $max_ip_packed_1, true);
-			load_country_cache($min_ip_packed_1, $max_ip_packed_1, true);
+		load_member_cache($log[0]['ip_packed'], end($log)['ip_packed']);
+    var_dump(microtime(true) - $gstart);
+
+		$min_ipv4 = $max_ipv4 = null;
+		$min_ipv6 = $max_ipv6 = null;
+
+		$count = count($log);
+
+		// Min IPv4 always comes first
+		if (strlen($log[0]['ip_packed']) === 4) {
+			$min_ipv4 = $log[0]['ip_packed'];
 		}
-		else {
-			$max_ip_packed_2 = $max_ip_packed_1;
-			$max_ip_packed_1 = null;
-			$min_ip_packed_2 = null;
-			foreach ($log AS $entry) {
-				if (strlen($entry['ip_packed']) == 4) {
-					$max_ip_packed_1 = $entry['ip_packed'];
+
+		// Find min/max IPv6 (backwards loop)
+		for ($i = $count - 1; $i >= 0; $i--) {
+			if (strlen($log[$i]['ip_packed']) === 16) {
+				$min_ipv6 = $log[$i]['ip_packed'];
+
+				// Max IP always last
+				if ($max_ipv6 === null) {
+					$max_ipv6 = $log[$i]['ip_packed'];
 				}
-				elseif ((strlen($entry['ip_packed']) == 16) && ($min_ip_packed_2 === null)) {
-					$min_ip_packed_2 = $entry['ip_packed'];
-					break;
-				}
+			} else {
+				// IPv4 ends here
+				$max_ipv4 = $log[$i]['ip_packed'];
+				break;
 			}
-			// ipv4...
-			load_asn_cache($min_ip_packed_1, $max_ip_packed_1, true);
-			load_country_cache($min_ip_packed_1, $max_ip_packed_1, true);
-			// ipv6...
-			load_asn_cache($min_ip_packed_2, $max_ip_packed_2, false);
-			load_country_cache($min_ip_packed_2, $max_ip_packed_2, false);
 		}
+
+    var_dump(microtime(true) - $gstart);
+		if ($min_ipv4 !== null) {
+			$ipv4_asns = get_asns($min_ipv4, $max_ipv4);
+		}
+
+		if ($min_ipv6 !== null) {
+			$ipv6_asns = get_asns($min_ipv6, $max_ipv6);
+		}
+
+		if ($min_ipv4 !== null) {
+			$ipv4_countries = get_countries($min_ipv4, $max_ipv4);
+		}
+
+		if ($min_ipv6 !== null) {
+			$ipv6_countries = get_countries($min_ipv6, $max_ipv6);
+		}
+
+    var_dump(microtime(true) - $gstart);
+
+    // Initialize cumulative timers
+$cumulative = [
+    'asn'     => 0.0,
+    'country' => 0.0,
+    'username'=> 0.0,
+    'update'  => 0.0,
+];
+
+foreach ($log as &$entry_info) {
+    if (strlen($entry_info['ip_packed']) === 4) {
+    $start = microtime(true);
+		$entry_info['asn'] = binary_search_data($entry_info['ip_packed'], $ipv4_asns);
+    $cumulative['asn'] += microtime(true) - $start;
+    $start = microtime(true);
+		$entry_info['country'] = binary_search_data($entry_info['ip_packed'], $ipv4_countries);
+    $cumulative['country'] += microtime(true) - $start;
+	} else {
+    $start = microtime(true);
+		$entry_info['asn'] = binary_search_data($entry_info['ip_packed'], $ipv6_asns);
+    $cumulative['asn'] += microtime(true) - $start;
+    $start = microtime(true);
+		$entry_info['country'] = binary_search_data($entry_info['ip_packed'], $ipv6_countries);
+    $cumulative['country'] += microtime(true) - $start;
+	}
+
+    // Username lookup
+    $start = microtime(true);
+    $entry_info['username'] = get_username($entry_info['ip_packed']);
+    $cumulative['username'] += microtime(true) - $start;
+
+    // DB update
+}
 
 		start_transaction();
-		foreach ($log AS $entry_info) {
-			$entry_info['asn'] = get_asn($entry_info['ip_packed']);
-			$entry_info['country'] = get_country($entry_info['ip_packed']);
-			$entry_info['username'] = get_username($entry_info['ip_packed']);
-			update_web_access_log($entry_info);
-		}
+    var_dump(microtime(true) - $gstart);
+    $start = microtime(true);
+    update_web_access_log($log);
+    var_dump(microtime(true) - $gstart);
+    var_dump(microtime(true) - $start);// Log cumulative times for the entire chunk
+//~ var_dump($cumulative,$cumulativeupdate,$index);
 		commit();
+    var_dump(microtime(true) - $gstart);
 	}
 
 	// For a simple generic yes/no response
@@ -1008,6 +1065,7 @@ function wala_load_asn($filename = '') {
 function wala_load_country($filename = '') {
 	global $smcFunc;
 
+	$batch_size = 1000;
 	$fp = @fopen($filename, 'r');
 	$buffer = @fgetcsv($fp, null, ",", "\"", "\\");
 	$inserts = array();
@@ -1015,6 +1073,7 @@ function wala_load_country($filename = '') {
 	// $buffer[0] = ip from, display format
 	// $buffer[1] = ip to, display format
 	// $buffer[2] = two char country code
+	$inserts = array();
 	while ($buffer !== false) {
 		// Uploaded from random sources????  Let's make sure we're good...
 		if (!filter_var($buffer[0], FILTER_VALIDATE_IP) || !filter_var($buffer[1], FILTER_VALIDATE_IP) || !is_string($buffer[2]))
@@ -1028,9 +1087,15 @@ function wala_load_country($filename = '') {
 			$buffer[1],
 			$smcFunc['htmlspecialchars']($buffer[2]),
 		);
+		if (count($inserts) >= $batch_size) {
+			insert_dbip_country($inserts);
+			$inserts = array();
+		}
 		$buffer = @fgetcsv($fp, null, ",", "\"", "\\");
 	}
-	insert_dbip_country($inserts);
+	if (!empty($inserts)) {
+		insert_dbip_country($inserts);
+	}
 	@fclose($fp);
 	return false;
 }
@@ -1049,8 +1114,20 @@ function wala_load_log($filename = '') {
 	global $smcFunc, $cache_enable;
 
 	$fp = @fopen($filename, 'r');
+	if (!$fp) {
+		return true;
+	}
+
 	$buffer = @fgetcsv($fp, null, " ", "\"", "\\");
 	$inserts = array();
+
+	// Static caches for repeated lookups
+	static $req_cache = array();
+	static $agent_cache = array();
+	static $browser_cache = array();
+
+	$batch_size = 100;
+	$batch_count = 0;
 
 	while ($buffer !== false) {
 		// Uploaded from random sources????  Let's make sure we're good...
@@ -1072,6 +1149,21 @@ function wala_load_log($filename = '') {
 		if (!is_string($buffer[1]) || !is_string($buffer[2]) || !is_string($buffer[5]) || !is_string($buffer[8]) || !is_string($buffer[9]))
 			return true;
 
+
+		$request = $buffer[5];
+		$user_agent = $buffer[9];
+
+		// Cached lookups
+		if (!isset($req_cache[$request])) {
+			$req_cache[$request] = get_request_type($request);
+		}
+		if (!isset($agent_cache[$user_agent])) {
+			$agent_cache[$user_agent] = get_agent($user_agent);
+		}
+		if (!isset($browser_cache[$user_agent])) {
+			$browser_cache[$user_agent] = get_browser_ver($user_agent);
+		}
+
 		$inserts[] = array(
 			// The first fields are common when the apache standard logfile is used; ignore the others in the csv, as they vary a lot
 			$buffer[0],									// ip packed
@@ -1086,121 +1178,38 @@ function wala_load_log($filename = '') {
 			$smcFunc['htmlspecialchars']($buffer[9]),	// useragent
 			// These fields are calc'd here...
 			$buffer[0],									// ip display
-			get_request_type($buffer[5]),				// request_type
-			get_agent($buffer[9]),						// agent
-			get_browser_ver($buffer[9]),				// browser version
+			$req_cache[$request],                     // request type
+			$agent_cache[$user_agent],                // agent
+			$browser_cache[$user_agent],              // browser version
 			$dti->getTimestamp(),						// dt in unix epoch format
 		);
+
+		//~ $batch_count++;
+		//~ if ($batch_count >= $batch_size) {
+			//~ insert_log($inserts);
+			//~ $inserts = array();
+			//~ $batch_count = 0;
+		//~ }
+
 		$buffer = fgetcsv($fp, null, " ", "\"", "\\");
 	}
-	insert_log($inserts);
+
+	// Flush remaining
+	if (!empty($inserts)) {
+		insert_log($inserts);
+		insert_log($inserts);
+		insert_log($inserts);
+		insert_log($inserts);
+		send_http_status(500);
+	}
+
 	fclose($fp);
+
 	return false;
 }
 
 /**
- * load_asn_cache - load up the asn b-tree style cache.
- *
- * Action: na - helper function
- *
- * @params inet $min_ip_packed
- * @params inet $max_ip_packed
- * @params bool $truncate - don't truncate if adding to existing cache
- *
- * @return void
- *
- */
-function load_asn_cache($min_ip_packed, $max_ip_packed, $truncate) {
-	global $asn_cache;
-
-	if ($truncate)
-		$asn_cache = array();
-	$asns = get_asns($min_ip_packed, $max_ip_packed);
-
-	$counter = 0;
-	$limit = 150;
-	$temp = array();
-	foreach ($asns AS $asn) {
-		$temp[bin2hex($asn['ip_to_packed'])] = array('ip_from_packed' => bin2hex($asn['ip_from_packed']), 'asn' => $asn['asn']);
-		$counter++;;
-		if ($counter >= $limit) {
-			$asn_cache[bin2hex($asn['ip_to_packed'])] = $temp;
-			$counter = 0;
-			$temp = array();
-		}
-	}
-	// Any stragglers?
-	if (!empty($temp))
-		$asn_cache[bin2hex($asn['ip_to_packed'])] = $temp;
-}
-
-/**
- * get_asn - look up the ASN from the cache
- *
- * Action: na - helper function
- *
- * @params inet $ip_packed
- *
- * @return string $asn
- *
- */
-function get_asn($ip_packed) {
-	global $asn_cache;
-
-	$ip_hex = bin2hex($ip_packed);
-	$asn =  '';
-	foreach($asn_cache AS $ip_to => $layer2) {
-		if (($ip_hex <= $ip_to) && (strlen($ip_hex) == strlen($ip_to))) {
-			foreach($layer2 AS $ip_to2 => $data) {
-				if (($ip_hex <= $ip_to2) && (strlen($ip_hex) == strlen($ip_to2))) {
-					if ($ip_hex >= $data['ip_from_packed'])
-						$asn = $data['asn'];
-					break 2;
-				}
-			}
-		}
-	}
-	return $asn;
-}
-
-/**
- * load_country_cache - load up the asn b-tree style cache.
- *
- * Action: na - helper function
- *
- * @params inet $min_ip_packed
- * @params inet $max_ip_packed
- * @params bool $truncate - don't truncate if adding to existing cache
- *
- * @return void
- *
- */
-function load_country_cache($min_ip_packed, $max_ip_packed, $truncate) {
-	global $country_cache;
-
-	if ($truncate)
-		$country_cache = array();
-	$countries = get_countries($min_ip_packed, $max_ip_packed);
-
-	$counter = 0;
-	$limit = 200;
-	$temp = array();
-	foreach ($countries AS $country) {
-		$temp[bin2hex($country['ip_to_packed'])] = array('ip_from_packed' => bin2hex($country['ip_from_packed']), 'country' => $country['country']);
-		$counter++;;
-		if ($counter >= $limit) {
-			$country_cache[bin2hex($country['ip_to_packed'])] = $temp;
-			$counter = 0;
-			$temp = array();
-		}
-	}
-	// Any stragglers?
-	if (!empty($temp))
-		$country_cache[bin2hex($country['ip_to_packed'])] = $temp;
-}
-
-/**
- * get_country - look up the country from the cache
+ * binary_search_data - look up the country from the cache
  *
  * Action: na - helper function
  *
@@ -1209,23 +1218,33 @@ function load_country_cache($min_ip_packed, $max_ip_packed, $truncate) {
  * @return string $country
  *
  */
-function get_country($ip_packed) {
-	global $country_cache;
+/**
+ * Look up the country for a packed IP using binary search (raw bytes).
+ *
+ * @param string $ip_packed Packed binary IP (4 or 16 bytes)
+ * @param bool   $timed     Optional; if true, prints lookup time
+ * @return string Country code or empty string
+ */
+function binary_search_data($ip_packed, $data) {
+	$low = 0;
+	$high = count($data) - 1;
+	$output = '';
 
-	$ip_hex = bin2hex($ip_packed);
-	$country =  '';
-	foreach($country_cache AS $ip_to => $layer2) {
-		if (($ip_hex <= $ip_to) && (strlen($ip_hex) == strlen($ip_to))) {
-			foreach($layer2 AS $ip_to2 => $data) {
-				if (($ip_hex <= $ip_to2) && (strlen($ip_hex) == strlen($ip_to2))) {
-					if ($ip_hex >= $data['ip_from_packed'])
-						$country = $data['country'];
-					break 2;
-				}
-			}
+	while ($low <= $high) {
+		$mid = intdiv($low + $high, 2);
+		$row = $data[$mid];
+
+		if ($ip_packed > $row['ip_to_packed']) {
+			$low = $mid + 1;
+		} elseif ($ip_packed < $row['ip_from_packed']) {
+			$high = $mid - 1;
+		} else {
+			$output = $row['output'];
+			break;
 		}
 	}
-	return $country;
+
+	return $output;
 }
 
 /**
@@ -1243,10 +1262,20 @@ function load_member_cache($min_ip_packed, $max_ip_packed) {
 	global $member_cache;
 
 	$member_cache = array();
+
+
+	$start = microtime(true);
+
 	$members = get_member_ips($min_ip_packed, $max_ip_packed);
+
+	$total = microtime(true) - $start;
+	printf("fetch mem ip took %.4f seconds\n", $total);
+	$start = microtime(true);
 	foreach ($members AS $member) {
 		$member_cache[bin2hex($member['ip_packed'])] = $member['real_name'];
 	}
+	$total = microtime(true) - $start;
+	printf("fetch mem ip took %.4f seconds\n", $total);
 }
 
 /**
@@ -1272,298 +1301,130 @@ function get_username($ip_packed) {
 	return $name;
 }
 
-/**
- * get_request_type - simplify the request type for easy reporting
- *
- * Action: na - helper function
- *
- * @params string $request (from web access log)
- *
- * @return string $request_type
- *
- */
 function get_request_type($request) {
-	if (stripos($request, 'area=alerts_popup') !== false)
-		$request_type = 'Alerts';
-	elseif (stripos($request, 'type=rss') !== false)
-		$request_type = 'RSS';
-	elseif (stripos($request, 'action=admin') !== false)
-		$request_type = 'admin';
-	elseif (stripos($request, 'action=keepalive') !== false)
-		$request_type = 'Keepalive';
-	elseif (stripos($request, 'action=printpage') !== false)
-		$request_type = 'Print';
-	elseif (stripos($request, 'action=recent') !== false)
-		$request_type = 'Recent';
-	elseif (stripos($request, 'action=unread') !== false)
-		$request_type = 'Unread';
-	elseif (stripos($request, 'action=likes') !== false)
-		$request_type = 'Likes';
-	elseif (stripos($request, 'action=dlattach') !== false)
-		$request_type = 'Attach';
-	elseif (stripos($request, 'action=quotefast') !== false)
-		$request_type = 'Quote';
-	elseif (stripos($request, 'action=markasread') !== false)
-		$request_type = 'MarkRead';
-	elseif (stripos($request, 'action=quickmod2') !== false)
-		$request_type = 'Modify';
-	elseif (stripos($request, 'action=profile') !== false)
-		$request_type = 'Profile';
-	elseif (stripos($request, 'action=pm') !== false)
-		$request_type = 'PM';
-	elseif (stripos($request, 'action=xml') !== false)
-		$request_type = 'xml';
-	elseif (stripos($request, 'action=.xml') !== false)
-		$request_type = 'xml';
-	elseif (stripos($request, 'action=attbr') !== false)
-		$request_type = 'Attachment Browser';
-	elseif (stripos($request, 'action=search') !== false)
-		$request_type = 'Search';
-	elseif (stripos($request, 'action=signup') !== false)
-		$request_type = 'Signup';
-	elseif (stripos($request, 'action=register') !== false)
-		$request_type = 'Signup';
-	elseif (stripos($request, 'action=join') !== false)
-		$request_type = 'Signup';
-	elseif (stripos($request, 'action=login') !== false)
-		$request_type = 'Login';
-	elseif (stripos($request, 'action=logout') !== false)
-		$request_type = 'Logout';
-	elseif (stripos($request, 'action=verificationcode') !== false)
-		$request_type = 'Login';
-	elseif (stripos($request, '.msg') !== false)
-		$request_type = 'Message';
-	elseif (stripos($request, 'msg=') !== false)
-		$request_type = 'Message';
-	elseif (stripos($request, 'topic=') !== false)
-		$request_type = 'Topic';
-	elseif (stripos($request, 'board=') !== false)
-		$request_type = 'Board';
-	elseif (stripos($request, ';wwwRedirect') !== false)
-		$request_type = 'Redirect';
-	elseif (stripos($request, '/smf/custom_avatar') !== false)
-		$request_type = 'Avatar';
-	elseif (stripos($request, '/smf/cron.php?ts=') !== false)
-		$request_type = 'Cron';
-	elseif (stripos($request, '/smf/index.php ') !== false)
-		$request_type = 'Board Index';
-	elseif (stripos($request, '/smf/proxy.php') !== false)
-		$request_type = 'Proxy';
-	elseif (stripos($request, '/smf/avatars') !== false)
-		$request_type = 'Avatar';
-	elseif (stripos($request, '/smf/Smileys') !== false)
-		$request_type = 'Smileys';
-	elseif (stripos($request, '/smf/Themes') !== false)
-		$request_type = 'Theme';
-	elseif (stripos($request, '/favicon.ico') !== false)
-		$request_type = 'Favicon';
-	elseif (stripos($request, '/robots.txt') !== false)
-		$request_type = 'robots.txt';
-	elseif (stripos($request, '/sitemap') !== false)
-		$request_type = 'Sitemap';
-	elseif (stripos($request, '/phpmyadmin') !== false)
-		$request_type = 'Admin';
-	elseif (stripos($request, '/admin') !== false)
-		$request_type = 'Admin';
-	else
-		$request_type = 'Other';
+	static $map = array(
+		'area=alerts_popup'      => 'Alerts',
+		'type=rss'               => 'RSS',
+		'action=admin'           => 'Admin',
+		'action=keepalive'       => 'Keepalive',
+		'action=printpage'       => 'Print',
+		'action=recent'          => 'Recent',
+		'action=unread'          => 'Unread',
+		'action=likes'           => 'Likes',
+		'action=dlattach'        => 'Attach',
+		'action=quotefast'       => 'Quote',
+		'action=markasread'      => 'MarkRead',
+		'action=quickmod2'       => 'Modify',
+		'action=profile'         => 'Profile',
+		'action=pm'              => 'PM',
+		'action=xml'             => 'xml',
+		'action=.xml'            => 'xml',
+		'action=attbr'           => 'Attachment Browser',
+		'action=search'          => 'Search',
+		'action=signup'          => 'Signup',
+		'action=register'        => 'Signup',
+		'action=join'            => 'Signup',
+		'action=login'           => 'Login',
+		'action=logout'          => 'Logout',
+		'action=verificationcode'=> 'Login',
+		'.msg'                   => 'Message',
+		'msg='                   => 'Message',
+		'topic='                 => 'Topic',
+		'board='                 => 'Board',
+		';wwwRedirect'           => 'Redirect',
+		'/smf/custom_avatar'     => 'Avatar',
+		'/smf/cron.php?ts='      => 'Cron',
+		'/smf/index.php '        => 'Board Index',
+		'/smf/proxy.php'         => 'Proxy',
+		'/smf/avatars'           => 'Avatar',
+		'/smf/Smileys'           => 'Smileys',
+		'/smf/Themes'            => 'Theme',
+		'/favicon.ico'           => 'Favicon',
+		'/robots.txt'            => 'robots.txt',
+		'/sitemap'               => 'Sitemap',
+		'/phpmyadmin'            => 'Admin',
+		'/admin'                 => 'Admin',
+	);
 
-	return $request_type;
+	static $regex = null;
+	if ($regex === null) {
+		$regex = $GLOBALS['modSettings']['wala_request_type_regex'] ?? null;
+	}
+	if ($regex === null) {
+		// Build one giant alternation regex
+		$regex = '/' . build_regex(array_keys($map), '/') . '/i';
+		updateSettings(['wala_request_type_regex' =>  $regex]);
+	}
+
+	if (preg_match($regex, $request, $m)) {
+		return $map[$m[0]] ?? 'Other';
+	}
+
+	return 'Other';
 }
 
-/**
- * get_agent - simplify the agent for easy reporting
- *
- * Action: na - helper function
- *
- * @params string $useragent (from web access log)
- *
- * @return string $agent
- *
- */
-function get_agent($useragent) {
-	if ($useragent === '-')
-		$agent = 'BLANK';
-	elseif (stripos($useragent, '2ip bot') !== false)
-		$agent = '2ip bot';
-	elseif (stripos($useragent, '360Spider') !== false)
-		$agent = '360Spider';
-	elseif (stripos($useragent, 'AdsBot-Google') !== false)
-		$agent = 'AdsBot-Google';
-	elseif (stripos($useragent, 'AhrefsBot') !== false)
-		$agent = 'AhrefsBot';
-	elseif (stripos($useragent, 'AliyunSecBot') !== false)
-		$agent = 'AliyunSecBot';
-	elseif (stripos($useragent, 'Awario') !== false)
-		$agent = 'Awario';
-	elseif (stripos($useragent, 'amazonbot') !== false)
-		$agent = 'amazonbot';
-	elseif (stripos($useragent, 'applebot') !== false)
-		$agent = 'applebot';
-	elseif (stripos($useragent, 'ArchiveBot') !== false)
-		$agent = 'ArchiveBot';
-	elseif (stripos($useragent, 'BaiduSpider') !== false)
-		$agent = 'BaiduSpider';
-	elseif (stripos($useragent, 'bingbot') !== false)
-		$agent = 'bingbot';
-	elseif (stripos($useragent, 'BLEXBot') !== false)
-		$agent = 'BLEXBot';
-	elseif (stripos($useragent, 'Bravebot') !== false)
-		$agent = 'Bravebot';
-	elseif (stripos($useragent, 'Bytespider') !== false)
-		$agent = 'Bytespider';
-	elseif (stripos($useragent, 'Cincraw') !== false)
-		$agent = 'Cincraw';
-	elseif (stripos($useragent, 'claudebot') !== false)
-		$agent = 'claudebot';
-	elseif (stripos($useragent, 'coccocbot') !== false)
-		$agent = 'coccocbot';
-	elseif (stripos($useragent, 'commoncrawl') !== false)
-		$agent = 'commoncrawl';
-	elseif (stripos($useragent, 'dataforseo-bot') !== false)
-		$agent = 'dataforseo-bot';
-	elseif (stripos($useragent, 'Discordbot') !== false)
-		$agent = 'Discordbot';
-	elseif (stripos($useragent, 'DomainStatsBot') !== false)
-		$agent = 'DomainStatsBot';
-	elseif (stripos($useragent, 'DotBot') !== false)
-		$agent = 'DotBot';
-	elseif (stripos($useragent, 'DuckAssistBot') !== false)
-		$agent = 'DuckAssistBot';
-	elseif (stripos($useragent, 'duckduckbot') !== false)
-		$agent = 'duckduckbot';
-	elseif (stripos($useragent, 'DuckDuckGo-Favicons-Bot') !== false)
-		$agent = 'DuckDuckGo-Favicons-Bot';
-	elseif (stripos($useragent, 'facebookexternalhit') !== false)
-		$agent = 'facebookexternalhit';
-	elseif (stripos($useragent, 'Gaisbot') !== false)
-		$agent = 'Gaisbot';
-	elseif (stripos($useragent, 'Googlebot') !== false)
-		$agent = 'Googlebot';
-	elseif (stripos($useragent, 'GoogleOther') !== false)
-		$agent = 'GoogleOther';
-	elseif (stripos($useragent, 'google.com/bot') !== false)
-		$agent = 'google.com/bot';
-	elseif (stripos($useragent, 'HawaiiBot') !== false)
-		$agent = 'HawaiiBot';
-	elseif (stripos($useragent, 'iAskBot') !== false)
-		$agent = 'iAskBot';
-	elseif (stripos($useragent, 'keys-so-bot') !== false)
-		$agent = 'keys-so-bot';
-	elseif (stripos($useragent, 'LinerBot') !== false)
-		$agent = 'LinerBot';
-	elseif (stripos($useragent, 'meta-externalagent') !== false)
-		$agent = 'meta-externalagent';
-	elseif (stripos($useragent, 'MixrankBot') !== false)
-		$agent = 'MixrankBot';
-	elseif (stripos($useragent, 'mj12bot') !== false)
-		$agent = 'mj12bot';
-	elseif (stripos($useragent, 'MojeekBot') !== false)
-		$agent = 'MojeekBot';
-	elseif (stripos($useragent, 'msnbot') !== false)
-		$agent = 'msnbot';
-	elseif (stripos($useragent, 'openai') !== false)
-		$agent = 'openai';
-	elseif (stripos($useragent, 'petalbot') !== false)
-		$agent = 'petalbot';
-	elseif (stripos($useragent, 'Pinterestbot') !== false)
-		$agent = 'Pinterestbot';
-	elseif (stripos($useragent, 'python-requests') !== false)
-		$agent = 'python-requests';
-	elseif (stripos($useragent, 'Qwantbot') !== false)
-		$agent = 'Qwantbot';
-	elseif (stripos($useragent, 'redditbot') !== false)
-		$agent = 'redditbot';
-	elseif (stripos($useragent, 'RU_Bot') !== false)
-		$agent = 'RU_Bot';
-	elseif (stripos($useragent, 'Screaming Frog SEO Spider') !== false)
-		$agent = 'Screaming Frog SEO Spider';
-	elseif (stripos($useragent, 'SeekportBot') !== false)
-		$agent = 'SeekportBot';
-	elseif (stripos($useragent, 'SemrushBot') !== false)
-		$agent = 'SemrushBot';
-	elseif (stripos($useragent, 'seznambot') !== false)
-		$agent = 'seznambot';
-	elseif (stripos($useragent, 'SiteLockSpider') !== false)
-		$agent = 'SiteLockSpider';
-	elseif (stripos($useragent, 'Slack-ImgProxy') !== false)
-		$agent = 'Slack-ImgProxy';
-	elseif (stripos($useragent, 'Sogou') !== false)
-		$agent = 'Sogou';
-	elseif (stripos($useragent, 'StartmeBot') !== false)
-		$agent = 'StartmeBot';
-	elseif (stripos($useragent, 'SuperBot') !== false)
-		$agent = 'SuperBot';
-	elseif (stripos($useragent, 'TelegramBot') !== false)
-		$agent = 'TelegramBot';
-	elseif (stripos($useragent, 'Thinkbot') !== false)
-		$agent = 'Thinkbot';
-	elseif (stripos($useragent, 'TikTokSpider') !== false)
-		$agent = 'TikTokSpider';
-	elseif (stripos($useragent, 'trendictionbot') !== false)
-		$agent = 'trendictionbot';
-	elseif (stripos($useragent, 'Twitterbot') !== false)
-		$agent = 'Twitterbot';
-	elseif (stripos($useragent, 'TurnitinBot') !== false)
-		$agent = 'TurnitinBot';
-	elseif (stripos($useragent, 'WellKnownBot') !== false)
-		$agent = 'WellKnownBot';
-	elseif (stripos($useragent, 'WireReaderBot') !== false)
-		$agent = 'WireReaderBot';
-	elseif (stripos($useragent, 'wpbot') !== false)
-		$agent = 'wpbot';
-	elseif (stripos($useragent, 'yacybot') !== false)
-		$agent = 'yacybot';
-	elseif (stripos($useragent, 'yandex') !== false)
-		$agent = 'yandex';
-	elseif (stripos($useragent, 'YisouSpider') !== false)
-		$agent = 'YisouSpider';
-	elseif (stripos($useragent, 'ZoomBot') !== false)
-		$agent = 'ZoomBot';
-	elseif (stripos($useragent, 'zoominfobot') !== false)
-		$agent = 'zoominfobot';
-	elseif (stripos($useragent, 'spider') !== false)
-		$agent = 'Other bot';
-	elseif (stripos($useragent, 'bot') !== false)
-		$agent = 'Other bot';
-	elseif (stripos($useragent, 'crawl') !== false)
-		$agent = 'Other bot';
-	else
-		$agent = 'User';
+function get_agent($user_agent) {
+	if ($user_agent === '-') {
+		return 'BLANK';
+	}
 
-	return $agent;
+	$ua = strtolower($user_agent);
+
+	static $map = array(
+		'2ip bot' => '2ip bot', '360spider' => '360Spider', 'adsbot-google' => 'AdsBot-Google',
+		'ahrefsbot' => 'AhrefsBot', 'aliyunsecbot' => 'AliyunSecBot', 'awario' => 'Awario',
+		'amazonbot' => 'amazonbot', 'applebot' => 'applebot', 'archivebot' => 'ArchiveBot',
+		'baiduspider' => 'BaiduSpider', 'bingbot' => 'bingbot', 'blexbot' => 'BLEXBot',
+		'bravebot' => 'Bravebot', 'bytespider' => 'Bytespider', 'cincraw' => 'Cincraw',
+		'claudebot' => 'claudebot', 'coccocbot' => 'coccocbot', 'commoncrawl' => 'commoncrawl',
+		'dataforseo-bot' => 'dataforseo-bot', 'discordbot' => 'Discordbot',
+		'domainstatsbot' => 'DomainStatsBot', 'dotbot' => 'DotBot', 'duckassistbot' => 'DuckAssistBot',
+		'duckduckbot' => 'duckduckbot', 'duckduckgo-favicons-bot' => 'DuckDuckGo-Favicons-Bot',
+		'facebookexternalhit' => 'facebookexternalhit', 'gaisbot' => 'Gaisbot',
+		'googlebot' => 'Googlebot', 'googleother' => 'GoogleOther', 'google.com/bot' => 'google.com/bot',
+		'hawaiibot' => 'HawaiiBot', 'iaskbot' => 'iAskBot', 'keys-so-bot' => 'keys-so-bot',
+		'linerbot' => 'LinerBot', 'meta-externalagent' => 'meta-externalagent',
+		'mixrankbot' => 'MixrankBot', 'mj12bot' => 'mj12bot', 'mojeekbot' => 'MojeekBot',
+		'msnbot' => 'msnbot', 'openai' => 'openai', 'petalbot' => 'petalbot',
+		'pinterestbot' => 'Pinterestbot', 'python-requests' => 'python-requests',
+		'qwantbot' => 'Qwantbot', 'redditbot' => 'redditbot', 'ru_bot' => 'RU_Bot',
+		'screaming frog seo spider' => 'Screaming Frog SEO Spider', 'seekportbot' => 'SeekportBot',
+		'semrushbot' => 'SemrushBot', 'seznambot' => 'seznambot', 'sitelockspider' => 'SiteLockSpider',
+		'slack-imgproxy' => 'Slack-ImgProxy', 'sogou' => 'Sogou', 'startmebot' => 'StartmeBot',
+		'superbot' => 'SuperBot', 'telegrambot' => 'TelegramBot', 'thinkbot' => 'Thinkbot',
+		'tiktokspider' => 'TikTokSpider', 'trendictionbot' => 'trendictionbot', 'twitterbot' => 'Twitterbot',
+		'turnitinbot' => 'TurnitinBot', 'wellknownbot' => 'WellKnownBot', 'wirereaderbot' => 'WireReaderBot',
+		'wpbot' => 'wpbot', 'yacybot' => 'yacybot', 'yandex' => 'yandex', 'yisouspider' => 'YisouSpider',
+		'zoombot' => 'ZoomBot', 'zoominfobot' => 'zoominfobot',
+	);
+
+	static $regex = null;
+	if ($regex === null) {
+		$regex = $GLOBALS['modSettings']['wala_user_agent_regex'] ?? null;
+	}
+	if ($regex === null) {
+		// Build one giant alternation regex
+		$regex = '/' . build_regex(array_keys($map), '/') . '/i';
+		updateSettings(['wala_user_agent_regex' =>  $regex]);
+	}
+
+	if (preg_match($regex, $ua, $m)) {
+		return $map[$m[0]] ?? 'Other';
+	}
+
+	// Generic bot detection
+	if (str_contains($ua, 'spider') || str_contains($ua, 'bot') || str_contains($ua, 'crawl')) {
+		return 'Other bot';
+	}
+
+	return 'User';
 }
+function get_browser_ver($user_agent) {
+	static $pattern = '/(?:(?:firefox|chrome|msie|safari|edg|edga|edgios|opera|vivaldi)\/\d{1,3}|mobile\/\d\d[a-z]\d\d\d\|safari\/\d{4,5})\b/i';
 
-/**
- * get_browser_ver - simplify the browser version for easy reporting
- *
- * Action: na - helper function
- *
- * @params string $useragent (from web access log)
- *
- * @return string $browser_ver
- *
- */
-function get_browser_ver($useragent) {
-	$browser_ver = '';
-	$matches = array();
+	if (preg_match($pattern, $user_agent, $m)) {
+		return $m[0];
+	}
 
-	// Gets most browser versions here...
-	static $pattern1 = '~(?:firefox|chrome|msie|safari|edg|edga|edgios|opera|vivaldi)\/\d{1,3}\b~i';
-	if (preg_match($pattern1, $useragent, $matches))
-		$browser_ver = $matches[0];
-
-	// Second swipe at it, lots of iphones use this
-	static $pattern2 = '~(?:mobile)\/\d\d[a-z]\d\d\d\b~i';
-	if (empty($browser_ver))
-		if (preg_match($pattern2, $useragent, $matches))
-			$browser_ver = $matches[0];
-
-	// Third swipe at it, lots of iphones use this long version of a safari version
-	static $pattern3 = '~(?:safari)\/\d{4,5}\b~i';
-	if (empty($browser_ver))
-		if (preg_match($pattern3, $useragent, $matches))
-			$browser_ver = $matches[0];
-
-	return $browser_ver;
+	return '';
 }
