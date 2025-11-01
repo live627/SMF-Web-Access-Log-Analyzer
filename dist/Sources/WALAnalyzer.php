@@ -1177,8 +1177,8 @@ function wala_load_log($filename = '') {
 
 		// Check the date & time, ensure apache common log format
 		$dt_string = substr($buffer[3] . $buffer[4], 1, -1);
-		$dti = DateTimeImmutable::createFromFormat('d/M/Y:H:i:s P', $dt_string);
-		if ($dti === false)
+		$ts = parseApacheDateTimeImmCached($dt_string);
+		if ($ts === false)
 			return true;
 
 		// Check the strings...
@@ -1217,15 +1217,15 @@ function wala_load_log($filename = '') {
 			$req_cache[$request],                     // request type
 			$agent_cache[$user_agent],                // agent
 			$browser_cache[$user_agent],              // browser version
-			$dti->getTimestamp(),						// dt in unix epoch format
+			$ts,										// dt in unix epoch format
 		);
 
-		//~ $batch_count++;
-		//~ if ($batch_count >= $batch_size) {
-			//~ insert_log($inserts);
-			//~ $inserts = array();
-			//~ $batch_count = 0;
-		//~ }
+		$batch_count++;
+		if ($batch_count >= $batch_size) {
+			insert_log($inserts);
+			$inserts = array();
+			$batch_count = 0;
+		}
 
 		$buffer = fgetcsv($fp, null, " ", "\"", "\\");
 	}
@@ -1233,10 +1233,6 @@ function wala_load_log($filename = '') {
 	// Flush remaining
 	if (!empty($inserts)) {
 		insert_log($inserts);
-		insert_log($inserts);
-		insert_log($inserts);
-		insert_log($inserts);
-		send_http_status(500);
 	}
 
 	fclose($fp);
@@ -1245,15 +1241,42 @@ function wala_load_log($filename = '') {
 }
 
 /**
- * binary_search_data - look up the country from the cache
- *
- * Action: na - helper function
- *
- * @params inet $ip_packed
- *
- * @return string $country
- *
+ * Cached DateTimeImmutable approach.
  */
+function parseApacheDateTimeImmCached($s) {
+	static $day_cache = [];
+	static $time_cache = [];
+
+	// Expected format: 25/Oct/2025:12:34:56 +0000
+	if (strlen($s) !== 26) {
+		return false;
+	}
+
+	// Using fixed string offsets here is much faster than a regex
+	$day_str = substr($s, 0, 11);   // "25/Oct/2025"
+	$h = substr($s, 12, 2);         // "12"
+	$i = substr($s, 15, 2);         // "34"
+	$sec = substr($s, 18, 2);       // "56"
+	$tz = substr($s, 20, 5);        // "+0000"
+
+	$day_key = $day_str . $tz;
+	$time_key = $h * 3600 + $i * 60 + $sec;
+
+	if (!isset($day_cache[$day_key])) {
+		$dti = DateTimeImmutable::createFromFormat('d/M/Y H:i:s O', $day_str . ' 00:00:00 ' . $tz);
+		if (!$dti) {
+			return false;
+		}
+		$day_cache[$day_key] = $dti->getTimestamp();
+	}
+
+	if (!isset($time_cache[$time_key])) {
+		$time_cache[$time_key] = $time_key;
+	}
+
+	return $day_cache[$day_key] + $time_cache[$time_key];
+}
+
 /**
  * Look up the country for a packed IP using binary search (raw bytes).
  *
