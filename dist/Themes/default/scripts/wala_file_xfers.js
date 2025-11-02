@@ -36,43 +36,6 @@ async function walaUpload(file_type) {
 	document.getElementById(prev_dt).textContent = '';
 	disable_controls();
 
-	// Start the process - prework on the server side, like clean files...
-	document.getElementById(file_type_status).textContent = wala_str_upprep;
-	const formData = new FormData();
-	formData.append('file_type', file_type);
-	formData.append('name', file.name);
-	formData.append(smf_session_var, smf_session_id);
-
-	try {
-		// Note xml must be passed in url here otherwise SMF will return a normal http template
-		const response = await fetch(smf_scripturl + '?action=xmlhttp;sa=walastart;xml', {
-			method: 'POST',
-			credentials: 'same-origin',
-			body: formData,
-		});
-		const result = await response.text();
-		if (!response.ok) {
-			console.error(wala_str_failed + ': ' + result);
-			new smc_Popup({
-				heading: wala_str_loader,
-				content: wala_str_failed + ': ' + result,
-				icon_class: 'main_icons error',
-			});
-			// If errors, kill the spinner & exit...
-			document.getElementById(file_type_wheel).style.visibility = 'hidden';
-			return;
-		}
-	} catch (error) {
-		console.error(wala_str_failed + ': ' + error);
-		new smc_Popup({
-			heading: wala_str_loader,
-			content: wala_str_failed,
-			icon_class: 'main_icons error',
-		});
-		document.getElementById(file_type_wheel).style.visibility = 'hidden';
-		return;
-	}
-
 	// Upload .gz file in chunks
 	for (let batchStart = 0; batchStart < file.size; batchStart += CHUNK_SIZE * CONCURRENCY) {
 		// Build one batch of up to CONCURRENCY chunks
@@ -275,45 +238,6 @@ async function walaUpload(file_type) {
 				break;
 			}
 			index++;
-		}
-	}
-
-	// End the process - post work on the server side, like updating the status...
-	if (error_found === false) {
-		const formData = new FormData();
-		formData.append('file_type', file_type);
-		formData.append('name', file.name);
-		formData.append(smf_session_var, smf_session_id);
-			formData.append('name', file.name);
-
-		try {
-			// Note xml must be passed in url here otherwise SMF will return a normal http template
-			const response = await fetch(smf_scripturl + '?action=xmlhttp;sa=walaend;xml', {
-				method: 'POST',
-				credentials: 'same-origin',
-				body: formData,
-			});
-			const result = await response.text();
-			if (!response.ok) {
-				console.error(wala_str_failed + ': ' + result);
-				new smc_Popup({
-					heading: wala_str_loader,
-					content: wala_str_failed + ': ' + result,
-					icon_class: 'main_icons error',
-				});
-				// If errors, kill the spinner & exit...
-				document.getElementById(file_type_wheel).style.visibility = 'hidden';
-				return;
-			}
-		} catch (error) {
-			console.error(wala_str_failed + ': ' + error);
-			new smc_Popup({
-				heading: wala_str_loader,
-				content: wala_str_failed,
-				icon_class: 'main_icons error',
-			});
-			document.getElementById(file_type_wheel).style.visibility = 'hidden';
-			return;
 		}
 	}
 
