@@ -5,18 +5,18 @@
 	<id>shawnb61:WALAnalyzer</id>
 	<version>1.0.4</version>
 	<type>modification</type>
-	<install for="2.1.6-2.1.99">
-		<readme type="file" parsebbc="true">readme.txt</readme>
+	<install for="2.1.*">
+		<readme parsebbc="true">readme.txt</readme>
 		<require-dir name="Sources" destination="$boarddir"/>
 		<require-dir name="Themes" destination="$boarddir"/>
 		<require-dir name="cache" destination="$boarddir"/>
-		<database type="file">WALAnalyzerDBChanges.php</database>
+		<database>install.php</database>
 		<hook hook="integrate_pre_load" function="wala_preload" file="$sourcedir/WALAnalyzerHooks.php" />
 		<hook hook="integrate_simple_actions" function="wala_simple_actions" file="$sourcedir/WALAnalyzerHooks.php" />
 		<hook hook="integrate_XMLhttpMain_subActions" function="wala_XMLhttpMain_subActions" file="$sourcedir/WALAnalyzerHooks.php" />
 		<hook hook="integrate_admin_areas" function="wala_admin_menu" file="$sourcedir/WALAnalyzerHooks.php" />
 	</install>
-	<uninstall for="2.1.6-2.1.99">
+	<uninstall for="2.1.*">
 		<hook hook="integrate_admin_areas" function="wala_admin_menu" file="$sourcedir/WALAnalyzerHooks.php" reverse="true" />
 		<hook hook="integrate_XMLhttpMain_subActions" function="wala_XMLhttpMain_subActions" file="$sourcedir/WALAnalyzerHooks.php" reverse="true" />
 		<hook hook="integrate_simple_actions" function="wala_simple_actions" file="$sourcedir/WALAnalyzerHooks.php" reverse="true" />
