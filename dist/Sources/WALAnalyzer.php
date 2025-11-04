@@ -25,6 +25,63 @@ if (!defined('SMF')) {
 }
 
 /**
+ * WALA custom error handler.
+ *
+ * Captures PHP errors into a global array for debugging or logging.
+ *
+ * @param int $errno The level of the error raised
+ * @param string $errstr The error message
+ * @param string $errfile The filename the error was raised in
+ * @param int $errline The line number the error was raised at
+ *
+ * @return bool Always true to prevent PHP default handler
+ */
+function wala_error_handler($errno, $errstr, $errfile, $errline) {
+	global $wala_errors;
+
+	// Initialize global if not yet set
+	if (!isset($wala_errors) || !is_array($wala_errors)) {
+		$wala_errors = [];
+	}
+
+	// Get error type name
+	switch ($errno) {
+		case E_ERROR:               $type = 'Fatal Error'; break;
+		case E_WARNING:             $type = 'Warning'; break;
+		case E_PARSE:               $type = 'Parse Error'; break;
+		case E_NOTICE:              $type = 'Notice'; break;
+		case E_CORE_ERROR:          $type = 'Core Error'; break;
+		case E_CORE_WARNING:        $type = 'Core Warning'; break;
+		case E_COMPILE_ERROR:       $type = 'Compile Error'; break;
+		case E_COMPILE_WARNING:     $type = 'Compile Warning'; break;
+		case E_USER_ERROR:          $type = 'User Error'; break;
+		case E_USER_WARNING:        $type = 'User Warning'; break;
+		case E_USER_NOTICE:         $type = 'User Notice'; break;
+		case E_STRICT:              $type = 'Strict Notice'; break;
+		case E_RECOVERABLE_ERROR:   $type = 'Recoverable Error'; break;
+		case E_DEPRECATED:          $type = 'Deprecated'; break;
+		case E_USER_DEPRECATED:     $type = 'User Deprecated'; break;
+		default:                    $type = 'Unknown Error'; break;
+	}
+
+	// Capture error data
+	$wala_errors[] = [
+		'type' => $type,
+		'errno' => $errno,
+		'message' => $errstr,
+		'file' => $errfile,
+		'line' => $errline,
+		'timestamp' => microtime(true),
+	];
+
+	// Optional: also echo for development
+	// echo "[{$type}] $errstr in $errfile on line $errline\n";
+
+	// Returning true prevents the PHP internal error handler from running
+	return true;
+}
+
+/**
  * wala_main - action.
  *
  * Primary action called from the admin menu for managing WALA loads & reports.
@@ -75,10 +132,7 @@ function wala_main() {
 	else
 		$context[$context['admin_menu_name']]['tab_data']['description'] = $txt['wala_desc_short'];
 
-	// Set the page title
 	$context['page_title'] = $txt['wala_title'];
-
-	// Finally fall through to what we are doing.
 	call_helper($subActions[$context['sub_action']]);
 }
 
@@ -290,74 +344,6 @@ function wala_reports() {
 }
 
 /**
- * WALA start response.
- * Used before loading dbip_asn, dbip_country & the access log.
- * Clear out temp files to start with an empty slate.
- *
- * Action: xmlhttp
- * Subaction: walastart
- *
- * @return null
- *
- */
-function wala_start() {
-	global $context, $cachedir;
-
-	// You have to be able to moderate the forum to do this.
-	isAllowedTo('admin_forum');
-
-	// Make sure the right person is putzing...
-	checkSession();
-
-	// if file system or post issues encountered, return a 500
-	$issues = false;
-
-	// Let's use our own subdir...
-	$temp_dir = $cachedir . '/wala';
-	if (!is_dir($temp_dir)) {
-		if (@mkdir($temp_dir, 0755) === false)
-			$issues = true;
-	}
-
-	// If POST fails due to network settings issues, these aren't set...
-	$file_name = '';
-	if (isset($_POST['name']) && is_string($_POST['name']))
-		$file_name = $_POST['name'];
-	else
-		$issues = true;
-
-	$file_type = '';
-	if (isset($_POST['file_type']) && is_string($_POST['file_type']))
-		$file_type = $_POST['file_type'];
-	else
-		$issues = true;
-
-	// Since this is the start of the whole process, clear out all similar filenames
-	// in case anything left over from previous failed attempts - .csvs and .gzs, all parts#s.
-	if (substr($file_name, -3) === '.gz')
-		$del_pattern = substr($file_name, 0, -3);
-	else
-		$del_pattern = $file_name;
-
-	$files = glob($temp_dir . '/' . $del_pattern . '*');
-	foreach($files as $file){
-		if(is_file($file)) {
-			@unlink($file);
-		}
-	}
-
-	// For a simple generic yes/no response
-	$context['sub_template'] = 'generic_xml';
-
-	if ($issues) {
-		$context['xml_data'][] = array('value' => 'FAILURE');
-		send_http_status(500);
-	}
-	else
-		$context['xml_data'][] = array('value' => 'OK');
-}
-
-/**
  * WALA chunk response - subaction for uploaded file chunk.
  * Used when loading dbip_asn, dbip_country & the access log.
  * Load the file chunk sent by the fetch api.
@@ -383,16 +369,9 @@ function wala_chunk() {
 	// Let's use our own subdir...
 	$temp_dir = $cachedir . '/wala';
 	if (!is_dir($temp_dir)) {
-		if (@mkdir($temp_dir, 0755) === false)
+		if (mkdir($temp_dir, 0755) === false)
 			$issues = true;
 	}
-
-	// If POST fails due to network settings issues, these aren't set...
-	$file_name = '';
-	if (isset($_POST['name']) && is_string($_POST['name']))
-		$file_name = $_POST['name'];
-	else
-		$issues = true;
 
 	$file_index = 0;
 	if (isset($_POST['index']) && is_numeric($_POST['index']))
@@ -406,9 +385,7 @@ function wala_chunk() {
 	else
 		$issues = true;
 
-	// Move the current chunk to tmp
-	if (@move_uploaded_file($_FILES['chunk']['tmp_name'], $temp_dir . '/' . $file_name . '.chunk.' . $file_index) === false)
-		$issues = true;
+	$issues = !$issues && !move_uploaded_file($_FILES['chunk']['tmp_name'], $temp_dir . '/' . $file_type . '.chunk-' . $file_index);
 
 	// For a simple generic yes/no response
 	$context['sub_template'] = 'generic_xml';
@@ -432,7 +409,7 @@ function wala_chunk() {
  *
  */
 function wala_prep() {
-    global $context, $txt, $sourcedir, $cachedir;
+	global $context, $txt, $sourcedir, $cachedir;
 
 	// You have to be able to moderate the forum to do this.
 	isAllowedTo('admin_forum');
@@ -440,7 +417,7 @@ function wala_prep() {
 	// Make sure the right person is putzing...
 	checkSession();
 
-	// If file system or post issues encountered, return a 500
+	set_error_handler(wala_error_handler(...));
 	$issues = false;
 
 	// Make sure you got all the pieces...
@@ -466,79 +443,79 @@ function wala_prep() {
 	else
 		$issues = true;
 
-	// Build the gz file from the chunks...
-	$file_path = $temp_dir . '/' . $file_name . '.chunk.*';
-	$file_parts = glob($file_path);
-	sort($file_parts, SORT_NATURAL);
-
-	$final_file_name = $temp_dir . '/' . $file_name;
-	$final_file = @fopen($final_file_name, 'w');
+	$final_file_name = $temp_dir . '/' . $file_type;
+	$final_file = fopen($final_file_name, 'w');
 	if ($final_file === false)
 		$issues = true;
 
-	foreach ($file_parts as $file_part) {
-		$fp_in = @fopen($file_part, 'rb');
+	for ($i = 1; $i <= $total_chunks; $i++) {
+		$fp_in = fopen($final_file_name . '.chunk-'. $i, 'r');
 		if ($fp_in === false) {
 			$issues = true;
-			continue;
+			break;
 		}
-		if (@stream_copy_to_stream($fp_in, $final_file) === false) {
+		if (stream_copy_to_stream($fp_in, $final_file) === false) {
 			$issues = true;
 		}
-		@fclose($fp_in);
-		@unlink($file_part);
+		fclose($fp_in);
+		unlink($final_file_name . '.chunk-'. $i);
 	}
 
-	@fclose($final_file);
-
-	if ($total_chunks != count($file_parts)) {
-		// It's not usable...
-		@unlink($final_file_name);
-		$issues = true;
-	}
+	fclose($final_file);
 
 	// Now that we have a readable .gz, break it up into .csvs
 	static $commit_rec_count = 25000;
 	$reccount = 0;
 	$index = 1;
 
-	// If gz filename ended in .gz, strip it for csv name...
-	if (substr($file_name, -3) === '.gz')
-		$filename_csv = substr($file_name, 0, -3);
-	else
-		$filename_csv = $file_name;
+	if (!$issues && $file_type === 'log') {
+		$fpgz = gzopen($final_file_name, 'r');
+		$fpcsv = fopen($final_file_name . '.csv-chunk-' . $index, 'w');
 
-	if (!$issues) {
-		$fpgz = @gzopen($temp_dir . '/' . $file_name, 'r');
-		$fpcsv = @fopen($temp_dir . '/' . $filename_csv . '.chunk.' . $index, 'w');
-
-		$buffer = @fgets($fpgz);
+		$buffer = fgets($fpgz);
 		while ($buffer !== false) {
 			$reccount++;
 			if ($reccount >= $commit_rec_count) {
 				fclose($fpcsv);
 				$reccount = 0;
 				$index++;
-				$fpcsv = @fopen($temp_dir . '/' . $filename_csv . '.chunk.' . $index, 'w');
+				$fpcsv = fopen($final_file_name . '.csv-chunk-' . $index, 'w');
 			}
-			@fwrite($fpcsv, $buffer);
-			$buffer = @fgets($fpgz);
+			fwrite($fpcsv, $buffer);
+			$buffer = fgets($fpgz);
 		}
-		@fclose($fpcsv);
-		@gzclose($fpgz);
-		// Don't need this anymore...
-		@unlink($final_file_name);
+		fclose($fpcsv);
+		gzclose($fpgz);
 	}
 
-	// Truncate target table...
 	require_once($sourcedir . '/WALAnalyzerModel.php');
+
 	if (!$issues) {
-		if ($file_type === 'asn')
-			truncate_dbip_asn();
-		elseif ($file_type === 'country')
-			truncate_dbip_country();
-		elseif ($file_type === 'log')
+		if ($file_type === 'asn') {
+			$issues = wala_load_asn($temp_dir);
+
+			if (!$issues) {
+				update_status('asn', $file_name, time());
+			} else {
+				update_status('asn');
+			}
+		}
+		elseif ($file_type === 'country') {
+			$issues = wala_load_country($temp_dir);
+
+			if (!$issues) {
+				update_status('country', $file_name, time());
+			} else {
+				update_status('country');
+			}
+		}
+		elseif ($file_type === 'log') {
+			update_status('log');
 			truncate_web_access_log();
+		}
+
+		// Don't need this anymore...
+		unlink($final_file_name);
 	}
 
 	// For a simple generic yes/no response
@@ -550,6 +527,19 @@ function wala_prep() {
 	}
 	else
 		$context['xml_data'][] = array('value' => 'OK ' . $index . ' chunks');
+
+	if (isset($GLOBALS['wala_errors'])) {
+		foreach ($GLOBALS['wala_errors'] as $error) {
+			$context['xml_data']['errors'] = array(
+				'identifier' => 'error',
+				'children' => array(
+					array(
+						'value' => $error['message'],
+					),
+				),
+			);
+		}
+	}
 }
 
 /**
@@ -565,161 +555,83 @@ function wala_prep() {
 function wala_import() {
 	global $context, $txt, $sourcedir, $cachedir;
 
-	// You have to be able to moderate the forum to do this.
-	isAllowedTo('admin_forum');
-
-	// Make sure the right person is putzing...
-	checkSession();
-
-	// If file system or post issues encountered, return a 500
-	$issues = false;
-
-	// Gonna need this...
-	require_once($sourcedir . '/WALAnalyzerModel.php');
-
-	// Make sure you got all the pieces...
-	$temp_dir = $cachedir . '/wala';
-	if (!is_dir($temp_dir))
-		$issues = true;
-
-	$file_name = '';
-	if (isset($_POST['name']) && is_string($_POST['name']))
-		$file_name = $_POST['name'];
-	else
-		$issues = true;
-
-	$total_chunks = 0;
-	if (isset($_POST['total_chunks']) && is_numeric($_POST['total_chunks']))
-		$total_chunks = $_POST['total_chunks'];
-	else
-		$issues = true;
-
-	$index = 0;
-	if (isset($_POST['index']) && is_numeric($_POST['index']))
-		$index = $_POST['index'];
-	else
-		$issues = true;
-
-	$file_type = '';
-	if (isset($_POST['file_type']) && is_string($_POST['file_type']))
-		$file_type = $_POST['file_type'];
-	else
-		$issues = true;
-
-	// If gz filename ended in .gz, strip it...
-	if (substr($file_name, -3) === '.gz')
-		$filename_csv = substr($file_name, 0, -3);
-	else
-		$filename_csv = $file_name;
-
-	// Build the file from the info passed
-	$filename_csv .= '.chunk.' . $index;
-
-
-	// Now choose what to load based on file_type
-	// Disable autocommits for mass inserts (can hide errors, though...)
-	if (!$issues) {
-		start_transaction();
-		if ($file_type === 'asn')
-			$issues = wala_load_asn($temp_dir . '/' . $filename_csv);
-		elseif ($file_type === 'country')
-			$issues = wala_load_country($temp_dir . '/' . $filename_csv);
-		elseif ($file_type === 'log')
-			$issues = wala_load_log($temp_dir . '/' . $filename_csv);
-
-		// If issues found here, it's an invalid file format...
-		// Logging error because we're not in a normal theme context...
-		if ($issues) {
-			loadLanguage('WALAnalyzer');
-			log_error($txt['wala_file_error'], 'general', __FILE__, __LINE__);
+	// Debug timer helper
+	$gstart = microtime(true);
+	function tdump($label, $start, $extra = null) {
+		static $first = null;
+		if ($first === null) $first = $start;
+		$elapsed = microtime(true) - $start;
+		$total = microtime(true) - $first;
+		echo "\n=== {$label} ===\n";
+		echo sprintf("Elapsed: %.6f s | Total since start: %.6f s\n", $elapsed, $total);
+		if ($extra !== null) {
+			echo "Extra: ";
+			if (is_array($extra) || is_object($extra))
+				print_r($extra);
+			else
+				echo $extra . "\n";
 		}
-		commit();
+		echo "------------------------\n";
 	}
 
-	// Don't need this one anymore either...
-	@unlink($temp_dir . '/' . $filename_csv);
-
-	// For a simple generic yes/no response
-	$context['sub_template'] = 'generic_xml';
-
-	if ($issues) {
-		$context['xml_data'][] = array('value' => 'FAILURE');
-		send_http_status(500);
-	}
-	else
-		$context['xml_data'][] = array('value' => 'OK');
-}
-
-/**
- * WALA end response.
- * Used after loading dbip_asn, dbip_country & the access log.
- * Update status upon successful completion.
- *
- * Action: xmlhttp
- * Subaction: walaend
- *
- * @return null
- *
- */
-function wala_end() {
-	global $context, $cachedir, $sourcedir;
+	tdump('Start wala_import()', $gstart);
 
 	// You have to be able to moderate the forum to do this.
+	$start = microtime(true);
 	isAllowedTo('admin_forum');
+	tdump('Check admin permissions', $start);
 
-	// Make sure the right person is putzing...
+	$start = microtime(true);
 	checkSession();
+	tdump('Check session', $start);
 
-	// if file system or post issues encountered, return a 500
 	$issues = false;
 
-	// Gonna need this...
+	$start = microtime(true);
 	require_once($sourcedir . '/WALAnalyzerModel.php');
+	tdump('Load WALAnalyzerModel', $start);
 
-	// Let's use our own subdir...
+	// Check temp directory
+	$start = microtime(true);
 	$temp_dir = $cachedir . '/wala';
-	if (!is_dir($temp_dir)) {
-		if (@mkdir($temp_dir, 0755) === false)
-			$issues = true;
-	}
+	if (!is_dir($temp_dir)) $issues = true;
+	tdump('Check temp_dir', $start, ['temp_dir' => $temp_dir]);
 
-	// If POST fails due to network settings issues, these aren't set...
-	$file_name = '';
-	if (isset($_POST['name']) && is_string($_POST['name']))
-		$file_name = $_POST['name'];
-	else
-		$issues = true;
+	// Validate POST params
+	$start = microtime(true);
+	$file_name = isset($_POST['name']) && is_string($_POST['name']) ? $_POST['name'] : ($issues = true);
+	$total_chunks = isset($_POST['total_chunks']) && is_numeric($_POST['total_chunks']) ? $_POST['total_chunks'] : ($issues = true);
+	$index = isset($_POST['index']) && is_numeric($_POST['index']) ? $_POST['index'] : ($issues = true);
+	$file_type = isset($_POST['file_type']) && is_string($_POST['file_type']) ? $_POST['file_type'] : ($issues = true);
+	tdump('Validate POST parameters', $start, compact('file_name','total_chunks','index','file_type'));
 
-	$file_type = '';
-	if (isset($_POST['file_type']) && is_string($_POST['file_type']))
-		$file_type = $_POST['file_type'];
-	else
-		$issues = true;
-
-	// Update the file status info...
-	if (!$issues ) {
+	// Process log file import
+	if (!$issues && $file_type === 'log') {
+		$start = microtime(true);
 		start_transaction();
-		if ($file_type === 'asn') {
-			// Also load wala_asns from wala_dbip_asn...
-			load_asn_names();
-			update_status('asn', $file_name, time());
-		}
-		elseif ($file_type === 'country')
-			update_status('country', $file_name, time());
-		elseif ($file_type === 'log')
-			update_status('log', $file_name, time());
+		tdump('Start transaction', $start);
+
+		$start2 = microtime(true);
+		$issues = wala_load_log_conditional($temp_dir . '/log.csv-chunk-' . $index);
+		tdump('Load log chunk', $start2, ['chunk_file' => $temp_dir . '/log.csv-chunk-' . $index]);
+
+		$start3 = microtime(true);
 		commit();
+		tdump('Commit transaction', $start3);
 	}
 
-	// For a simple generic yes/no response
+	// Prepare XML response
+	$start = microtime(true);
 	$context['sub_template'] = 'generic_xml';
-
 	if ($issues) {
-		$context['xml_data'][] = array('value' => 'FAILURE');
+		$context['xml_data'][] = ['value' => 'FAILURE'];
 		send_http_status(500);
+	} else {
+		$context['xml_data'][] = ['value' => 'OK'];
 	}
-	else
-		$context['xml_data'][] = array('value' => 'OK');
+	tdump('Prepare XML response', $start);
+
+	tdump('End wala_import()', $gstart);
 }
 
 /**
@@ -900,191 +812,339 @@ function wala_memb_attr() {
  *
  */
 function wala_log_attr() {
+	global $context, $txt, $sourcedir, $cachedir;
 
-    global $context, $sourcedir;
-
-	// You have to be able to moderate the forum to do this.
 	isAllowedTo('admin_forum');
-
-	// Make sure the right person is putzing...
 	checkSession();
 
-	// If file system or post issues encountered, return a 500
+	set_error_handler(wala_error_handler(...));
 	$issues = false;
 
-	$index = 0;
-	if (isset($_POST['index']) && is_numeric($_POST['index']))
-		$index = (int) $_POST['index'];
-	else
+	$temp_dir = $cachedir . '/wala';
+	if (!is_dir($temp_dir))
 		$issues = true;
 
-	$file_name = '';
-	if (isset($_POST['name']) && is_string($_POST['name']))
-		$file_name = $_POST['name'];
-	else
+	$index = isset($_POST['index']) && is_numeric($_POST['index']) ? (int) $_POST['index'] : 0;
+	$file_name = isset($_POST['name']) && is_string($_POST['name']) ? $_POST['name'] : '';
+	if ($file_name === '' || $issues)
 		$issues = true;
 
-	// Gonna need this...
 	require_once($sourcedir . '/WALAnalyzerModel.php');
 
 	if (!$issues) {
-    $gstart = microtime(true);
-		// How many chunks total?  Not too big...
-		// Even a small chunk of users, sorted by IP, can retrieve a large # of asn/country rows
+		$gstart = microtime(true);
+
+		// Use readable timedump instead of var_dump
+		function tdump($label, $start, $extra = null) {
+			static $first = null;
+			$elapsed = microtime(true) - $start;
+			$total = microtime(true) - $first;
+			echo "\n=== {$label} ===\n";
+			$first = $start;
+			echo sprintf("Elapsed: %.6f s | Total since start: %.6f s\n", $elapsed, $total);
+			if ($extra !== null) {
+				echo "Extra: ";
+				if (is_array($extra) || is_object($extra))
+					print_r($extra);
+				else
+					echo $extra . "\n";
+			}
+			echo "------------------------\n";
+		}
+
 		$reccount = count_web_access_log();
-    var_dump(microtime(true) - $gstart);
-		$commit_rec_count = ceil($reccount/20);
-		if ($commit_rec_count > 5000)
-			$commit_rec_count = 5000;
-		$chunkct = ceil($reccount/$commit_rec_count);
+		tdump('After count_web_access_log()', $gstart, ['reccount' => $reccount]);
+
+		$commit_rec_count = min(5000, ceil($reccount / 20));
+		$chunkct = ceil($reccount / $commit_rec_count);
 
 		$offset = $index * $commit_rec_count;
 		$limit = $commit_rec_count;
 		$log = get_web_access_log($offset, $limit);
-    var_dump(microtime(true) - $gstart);
+		tdump('After get_web_access_log()', $gstart, ['offset' => $offset, 'limit' => $limit, 'count' => count($log)]);
 
 		load_member_cache($log[0]['ip_packed'], end($log)['ip_packed']);
-    var_dump(microtime(true) - $gstart);
+		tdump('After load_member_cache()', $gstart);
 
-		$min_ipv4 = $max_ipv4 = null;
-		$min_ipv6 = $max_ipv6 = null;
-
+		// Min/max IP boundaries
+		$min_ipv4 = $max_ipv4 = $min_ipv6 = $max_ipv6 = null;
 		$count = count($log);
 
-		// Min IPv4 always comes first
-		if (strlen($log[0]['ip_packed']) === 4) {
+		if (strlen($log[0]['ip_packed']) === 4)
 			$min_ipv4 = $log[0]['ip_packed'];
-		}
 
-		// Find min/max IPv6 (backwards loop)
 		for ($i = $count - 1; $i >= 0; $i--) {
 			if (strlen($log[$i]['ip_packed']) === 16) {
-				$min_ipv6 = $log[$i]['ip_packed'];
-
-				// Max IP always last
-				if ($max_ipv6 === null) {
-					$max_ipv6 = $log[$i]['ip_packed'];
-				}
+				$min_ipv6 ??= $log[$i]['ip_packed'];
+				$max_ipv6 ??= $log[$i]['ip_packed'];
 			} else {
-				// IPv4 ends here
 				$max_ipv4 = $log[$i]['ip_packed'];
 				break;
 			}
 		}
 
-    var_dump(microtime(true) - $gstart);
-		if ($min_ipv4 !== null) {
-			$ipv4_asns = get_asns($min_ipv4, $max_ipv4);
-		}
+		global $ord_cache;
+		$ord_cache = array_flip(range("\0", "\xFF"));
 
-		if ($min_ipv6 !== null) {
-			$ipv6_asns = get_asns($min_ipv6, $max_ipv6);
-		}
+		tdump('After preparing ord_cache()', $gstart);
 
 		if ($min_ipv4 !== null) {
-			$ipv4_countries = get_countries($min_ipv4, $max_ipv4);
+			$ipv4_asns = wala_load_buffer($temp_dir . '/asn-4');
+			$ipv4_asns_jump_table = buildJumpTable($ipv4_asns, 4);
+			tdump('IPv4 ASN buffers loaded', $gstart);
 		}
-
 		if ($min_ipv6 !== null) {
-			$ipv6_countries = get_countries($min_ipv6, $max_ipv6);
+			$ipv6_asns = wala_load_buffer($temp_dir . '/asn-16');
+			$ipv6_asns_jump_table = buildJumpTable($ipv6_asns, 16);
+			tdump('IPv6 ASN buffers loaded', $gstart);
+		}
+		if ($min_ipv4 !== null) {
+			$ipv4_countries = wala_load_buffer($temp_dir . '/country-4');
+			$ipv4_countries_jump_table = buildJumpTable($ipv4_countries, 4);
+			tdump('IPv4 country buffers loaded', $gstart);
+		}
+		if ($min_ipv6 !== null) {
+			$ipv6_countries = wala_load_buffer($temp_dir . '/country-16');
+			$ipv6_countries_jump_table = buildJumpTable($ipv6_countries, 16);
+			tdump('IPv6 country buffers loaded', $gstart);
 		}
 
-    var_dump(microtime(true) - $gstart);
+		// Timers
+		$cumulative = ['asn' => 0.0, 'country' => 0.0, 'username' => 0.0, 'update' => 0.0];
 
-    // Initialize cumulative timers
-$cumulative = [
-    'asn'     => 0.0,
-    'country' => 0.0,
-    'username'=> 0.0,
-    'update'  => 0.0,
-];
+		foreach ($log as &$entry_info) {
+			if (strlen($entry_info['ip_packed']) === 4) {
+				$start = microtime(true);
+				$entry_info['asn'] = binary_search_data($entry_info['ip_packed'], $ipv4_asns_jump_table, $ipv4_asns, 12);
+				$cumulative['asn'] += microtime(true) - $start;
 
-foreach ($log as &$entry_info) {
-    if (strlen($entry_info['ip_packed']) === 4) {
-    $start = microtime(true);
-		$entry_info['asn'] = binary_search_data($entry_info['ip_packed'], $ipv4_asns);
-    $cumulative['asn'] += microtime(true) - $start;
-    $start = microtime(true);
-		$entry_info['country'] = binary_search_data($entry_info['ip_packed'], $ipv4_countries);
-    $cumulative['country'] += microtime(true) - $start;
-	} else {
-    $start = microtime(true);
-		$entry_info['asn'] = binary_search_data($entry_info['ip_packed'], $ipv6_asns);
-    $cumulative['asn'] += microtime(true) - $start;
-    $start = microtime(true);
-		$entry_info['country'] = binary_search_data($entry_info['ip_packed'], $ipv6_countries);
-    $cumulative['country'] += microtime(true) - $start;
-	}
+				$start = microtime(true);
+				$entry_info['country'] = binary_search_data($entry_info['ip_packed'], $ipv4_countries_jump_table, $ipv4_countries, 10);
+				$cumulative['country'] += microtime(true) - $start;
+			} else {
+				$start = microtime(true);
+				$entry_info['asn'] = binary_search_data($entry_info['ip_packed'], $ipv6_asns_jump_table, $ipv6_asns, 36);
+				$cumulative['asn'] += microtime(true) - $start;
 
-    // Username lookup
-    $start = microtime(true);
-    $entry_info['username'] = get_username($entry_info['ip_packed']);
-    $cumulative['username'] += microtime(true) - $start;
+				$start = microtime(true);
+				$entry_info['country'] = binary_search_data($entry_info['ip_packed'], $ipv6_countries_jump_table, $ipv6_countries, 34);
+				$cumulative['country'] += microtime(true) - $start;
+			}
 
-    // DB update
-}
+			$start = microtime(true);
+			$entry_info['username'] = get_username($entry_info['ip_packed']);
+			$cumulative['username'] += microtime(true) - $start;
+		}
+		var_dump($GLOBALS['RS']);
 
 		start_transaction();
-    var_dump(microtime(true) - $gstart);
-    $start = microtime(true);
-    update_web_access_log($log);
-    var_dump(microtime(true) - $gstart);
-    var_dump(microtime(true) - $start);// Log cumulative times for the entire chunk
-//~ var_dump($cumulative,$cumulativeupdate,$index);
+		tdump('After start_transaction()', $gstart);
+
+		$start = microtime(true);
+		update_web_access_log2($log);
+		$cumulative['update'] += microtime(true) - $start;
+		tdump('After update_web_access_log2()', $gstart, $cumulative);
+
 		commit();
-    var_dump(microtime(true) - $gstart);
+		tdump('After commit()', $gstart, ['chunk' => $index]);
 	}
 
-	// For a simple generic yes/no response
 	$context['sub_template'] = 'generic_xml';
-
 	if ($issues) {
-		$context['xml_data'][] = array('value' => 'FAILURE');
+		$context['xml_data'][] = ['value' => 'FAILURE'];
 		send_http_status(500);
+	} else {
+		$context['xml_data'][] = ['value' => 'OK ' . ($chunkct ?? '?') . ' chunks'];
 	}
-	else
-		$context['xml_data'][] = array('value' => 'OK ' . $chunkct . ' chunks');
+
+	if (isset($GLOBALS['wala_errors'])) {
+		foreach ($GLOBALS['wala_errors'] as $error) {
+			$context['xml_data']['errors'] = [
+				'identifier' => 'error',
+				'children' => [['value' => $error['message']]],
+			];
+		}
+	}
 }
 
 /**
- * WALA_load_asn - load a chunk of the dbip asn file to db.
+ * Load a packed binary file into memory and return its buffer.
  *
- * Action: na - helper function
+ * @param string $filename Path to the ASN binary file (asn-4 or asn-16)
  *
- * @param string filename of chunk
- *
- * @return bool issues found
- *
+ * @return string|false Binary buffer on success, false on failure
  */
-function wala_load_asn($filename = '') {
-	global $smcFunc;
-
-	$fp = @fopen($filename, 'r');
-	$buffer = @fgetcsv($fp, null, ",", "\"", "\\");
-	$inserts = array();
-
-	// $buffer[0] = ip from, display format
-	// $buffer[1] = ip to, display format
-	// $buffer[2] = asn
-	// $buffer[3] = asn desc
-	while ($buffer !== false) {
-		// Uploaded from random sources????  Let's make sure we're good...
-		if (!filter_var($buffer[0], FILTER_VALIDATE_IP) || !filter_var($buffer[1], FILTER_VALIDATE_IP) || !is_numeric($buffer[2]) || !is_string($buffer[3]))
-			return true;
-
-		// Note SMF deals with the inet_pton() for type inet, so just pass ip display format here...
-		$inserts[] = array(
-			$buffer[0],
-			$buffer[1],
-			$buffer[0],
-			$buffer[1],
-			$buffer[2],
-			$smcFunc['htmlspecialchars']($buffer[3]),
-		);
-		$buffer = @fgetcsv($fp, null, ",", "\"", "\\");
+function wala_load_buffer($filename)
+{
+	if (!is_readable($filename)) {
+		return false;
 	}
+
+	$buffer = @file_get_contents($filename);
+	if ($buffer === false) {
+		return false;
+	}
+
+	return $buffer;
+}
+
+/**
+ * Build jump table for packed IP ranges.
+ *
+ * Each slot points to the first record whose ip_to >= prefix boundary.
+ *
+ * For IPv4 → 256 entries (1 per /8)
+ * For IPv6 → 65536 entries (1 per /16)
+ *
+ * @param string $data Binary blob (packed ranges)
+ * @param int $len IP length (4 or 16)
+ * @return array<int,int> Jump table (prefix => record index)
+ */
+function buildJumpTable($data, $len)
+{
+	global $ord_cache;
+
+	$record_size = $len * 2 + 2;
+	$record_count = (int)(strlen($data) / $record_size);
+
+	$table_size = $len === 4 ? 256 : 65536;
+	$jump_table = array_fill(0, $table_size, $record_count); // default to end
+
+	$prefix = 0;
+	for ($i = 0, $j = 0; $i < $record_count; $i++, $j += $record_size) {
+		// Extract prefix index
+		if ($len === 4) {
+			$prefix_val = $ord_cache[$data[$j + $len]];
+		} else {
+			$prefix_val = ($ord_cache[$data[$j + $len]] << 8) | $ord_cache[$data[$j + $len + 1]];
+		}
+
+		// Fill all slots up to this prefix
+		while ($prefix <= $prefix_val && $prefix < $table_size) {
+			$jump_table[$prefix] = $i;
+			$prefix++;
+		}
+	}
+
+	return $jump_table;
+}
+
+/**
+ * Binary search packed IP ranges using jump table.
+ *
+ * @param string $ip_packed inet_pton result
+ * @param array $jump_table Jump table for that IP family
+ * @return string 2-char country code or ''
+ */
+function binary_search_data(string $ip_packed, array $jump_table, string $data, int $record_size): string
+{
+	global $ord_cache;
+
+	$len = strlen($ip_packed);
+	$return_size = $record_size - $len * 2;
+	$GLOBALS['RS'][$return_size]=$record_size ;
+	$record_count = (int)(strlen($data) / $record_size);
+
+	// Compute prefix index
+	$prefix = ($len === 4)
+		? $ord_cache[$ip_packed[0]]
+		: (($ord_cache[$ip_packed[0]] << 8) | $ord_cache[$ip_packed[1]]);
+
+	// Determine search window
+	$low = $jump_table[$prefix];
+	$high = $jump_table[$prefix + 1] ?? $record_count - 1;
+
+	while ($low <= $high) {
+		$mid = ($low + $high) >> 1;
+		$offset = $mid * $record_size;
+
+		if (substr_compare($data, $ip_packed, $offset + $len, $len) < 0) {
+			// The IP we’re searching for is above this range
+			$low = $mid + 1;
+		} elseif (substr_compare($data, $ip_packed, $offset, $len) > 0) {
+			// The IP we’re searching for is below this range
+			$high = $mid - 1; 
+		} else {
+			// The IP lies within the current range
+			return substr($data, $offset + $len * 2, $return_size);
+		}
+	}
+
+	return '';
+}
+
+/**
+ * Load DBIP ASN data into binary form for IPv4 and IPv6.
+ *
+ * The CSV format is expected to have:
+ *   0: ip_from
+ *   1: ip_to
+ *   2: asn_number
+ *   3: asn_name
+ *
+ * For each record size (4 for IPv4, 16 for IPv6), this function writes a binary file
+ * with records consisting of:
+ *   [ip_from][ip_to][asn_number(4 bytes)]
+ *
+ * @param string $temp_dir Directory containing the gzipped ASN CSV (named 'asn')
+ *
+ * @return bool Any issues found
+ */
+function wala_load_asn($temp_dir) {
+	if (($fp_in = gzopen($temp_dir . '/asn', 'r')) === false) {
+		return true;
+	}
+
+	$inserts = [];
+
+	foreach ([4, 16] as $record_size) {
+		if (($fp_out = fopen($temp_dir . '/asn-' . $record_size, 'w')) === false) {
+			gzclose($fp_in);
+			return true;
+		}
+
+		while (($line = gzgets($fp_in)) !== false) {
+			// Skip invalid or malformed lines
+			if (substr_count($line, ',') < 4) {
+				continue;
+			}
+
+			$ip_from_str = strtok($line, ',');
+			$ip_to_str = strtok(',');
+			$asn_num_str = strtok(',');
+			$asn_name = strtok(',');
+
+			$ip_from = @inet_pton($ip_from_str);
+			$ip_to = @inet_pton($ip_to_str);
+
+			if (!$ip_from || !$ip_to) {
+				continue;
+			}
+
+			$len = strlen($ip_from);
+
+			if ($len !== $record_size) {
+				continue;
+			}
+
+			// ASN number as unsigned 32-bit int
+			$asn_num = (int)$asn_num_str;
+			$asn_bin = pack('N', $asn_num);
+
+			$inserts[$asn_num] = trim($asn_name, '"');
+
+			// Write packed data: [ip_from][ip_to][asn_num(4)]
+			fwrite($fp_out, $ip_from . $ip_to . $asn_bin);
+		}
+
+		fclose($fp_out);
+		gzrewind($fp_in);
+	}
+
+	gzclose($fp_in);
+
 	insert_dbip_asn($inserts);
-	@fclose($fp);
+
 	return false;
 }
 
@@ -1098,98 +1158,118 @@ function wala_load_asn($filename = '') {
  * @return bool $issues_found
  *
  */
-function wala_load_country($filename = '') {
-	global $smcFunc;
+function wala_load_country($temp_dir) {
+	if (($fp_in = gzopen($temp_dir . '/country', 'r')) !== false) {
+		foreach ([4, 16] as $record_size) {
+			if (($fp_out = fopen($temp_dir . '/country-' . $record_size, 'w')) !== false) {
+				while (($line = gzgets($fp_in)) !== false) {
+					if (substr_count($line, ',') !== 2) {
+						continue;
+					}
 
-	$batch_size = 1000;
-	$fp = @fopen($filename, 'r');
-	$buffer = @fgetcsv($fp, null, ",", "\"", "\\");
-	$inserts = array();
+					$ip_from_str = strtok($line, ',');
+					$ip_to_str = strtok(',');
+					$country = strtok(',');
 
-	// $buffer[0] = ip from, display format
-	// $buffer[1] = ip to, display format
-	// $buffer[2] = two char country code
-	$inserts = array();
-	while ($buffer !== false) {
-		// Uploaded from random sources????  Let's make sure we're good...
-		if (!filter_var($buffer[0], FILTER_VALIDATE_IP) || !filter_var($buffer[1], FILTER_VALIDATE_IP) || !is_string($buffer[2]))
-			return true;
+					$ip_from = @inet_pton($ip_from_str);
+					$ip_to = @inet_pton($ip_to_str);
 
-		// Note SMF deals with the inet_pton() for type inet, so just pass ip display format here...
-		$inserts[] = array(
-			$buffer[0],
-			$buffer[1],
-			$buffer[0],
-			$buffer[1],
-			$smcFunc['htmlspecialchars']($buffer[2]),
-		);
-		if (count($inserts) >= $batch_size) {
-			insert_dbip_country($inserts);
-			$inserts = array();
+					if (!$ip_from || !$ip_to) {
+						continue;
+					}
+
+					$len = strlen($ip_from);
+
+					if ($len !== $record_size) {
+						continue;
+					}
+
+					fwrite($fp_out, $ip_from . $ip_to . substr($country, 0, 2));
+				}
+
+				fclose($fp_out);
+				gzrewind($fp_in);
+			}
 		}
-		$buffer = @fgetcsv($fp, null, ",", "\"", "\\");
+
+		gzclose($fp_in);
 	}
-	if (!empty($inserts)) {
-		insert_dbip_country($inserts);
-	}
-	@fclose($fp);
+
 	return false;
 }
-
 /**
- * WALA_load_log - load a chunk of the web access log file to the db.
+ * Generator: yield each log row
  *
- * Action: na - helper function
- *
- * @param string filename of chunk
- *
- * @return null
- *
+ * @param string $filename
+ * @return Generator yields processed log rows
  */
-function wala_load_log($filename = '') {
-	global $smcFunc, $cache_enable;
+function wala_load_log_generator(string $filename): Generator
+{
+	global $smcFunc;
 
-	$fp = @fopen($filename, 'r');
+	$fp = fopen($filename, 'r');
 	if (!$fp) {
 		return true;
 	}
 
-	$buffer = @fgetcsv($fp, null, " ", "\"", "\\");
-	$inserts = array();
-
-	// Static caches for repeated lookups
-	static $req_cache = array();
-	static $agent_cache = array();
-	static $browser_cache = array();
+	$inserts = [];
+	static $req_cache = [];
+	static $agent_cache = [];
+	static $browser_cache = [];
 
 	$batch_size = 100;
 	$batch_count = 0;
+	$i = 0;
 
-	while ($buffer !== false) {
-		// Uploaded from random sources????  Let's make sure we're good...
-		// Check the IP...
-		if (!filter_var($buffer[0], FILTER_VALIDATE_IP))
+	while (($line = fgets($fp)) !== false) {
+		if ($line === '') {
+			continue;
+		}
+
+		if (strpos($line, '\\') !== false) {
+			// Use str_getcsv for escaped/quoted fields
+			$buffer = str_getcsv($line, ' ', '"', '\\');
+
+			// Map expected fields from CSV
+			if (count($buffer) < 10) {
+				return true;
+			}
+
+			list($ip, $client, $requestor, $date_part, $tz_part, $request, $status, $size, $referrer, $user_agent) = $buffer;
+		} else {
+			// Fast, naive, brittle path with strtok
+			$ip = strtok($line, ' ');
+			$client = strtok(' ');
+			$requestor = strtok(' ');
+			$date_part = strtok(' ');
+			$tz_part = strtok(' ');
+			$request = strtok('"');
+			$status = strtok(' ');
+			$size = strtok(' ');
+			$referrer = strtok('"');
+			strtok('"');
+			$user_agent = strtok('"');
+		}
+
+		// Validate and normalize
+		if (!filter_var($ip, FILTER_VALIDATE_IP)) {
+			trigger_error('Invalid IP: ' . $ip);
 			return true;
+		}
 
-		// Check the ints...
-		if (!is_numeric($buffer[6]) || !is_numeric($buffer[7]))
+		if (!is_numeric($status) || !is_numeric($size)) {
+			trigger_error('Values must be  numeric: ' . $ip);
 			return true;
+		}
 
-		// Check the date & time, ensure apache common log format
-		$dt_string = substr($buffer[3] . $buffer[4], 1, -1);
+		$dt_string = substr($date_part . ' ' .  $tz_part, 1, -1);
 		$ts = parseApacheDateTimeImmCached($dt_string);
-		if ($ts === false)
+		if ($ts === false) {
+			trigger_error('Invalid date: ' . $dt_string);
 			return true;
+		}
 
-		// Check the strings...
-		if (!is_string($buffer[1]) || !is_string($buffer[2]) || !is_string($buffer[5]) || !is_string($buffer[8]) || !is_string($buffer[9]))
-			return true;
-
-
-		$request = $buffer[5];
-		$user_agent = $buffer[9];
-
-		// Cached lookups
+		// Caching lookups
 		if (!isset($req_cache[$request])) {
 			$req_cache[$request] = get_request_type($request);
 		}
@@ -1200,44 +1280,96 @@ function wala_load_log($filename = '') {
 			$browser_cache[$user_agent] = get_browser_ver($user_agent);
 		}
 
-		$inserts[] = array(
-			// The first fields are common when the apache standard logfile is used; ignore the others in the csv, as they vary a lot
-			$buffer[0],									// ip packed
-			$smcFunc['htmlspecialchars']($buffer[1]),	// client (usually unused)
-			$smcFunc['htmlspecialchars']($buffer[2]),	// requestor (usually unused)
-			substr($buffer[3], 1),						// date timestamp, strip the [
-			substr($buffer[4], 0, -1),					// tz, strip the ]
-			$smcFunc['htmlspecialchars']($buffer[5]),	// request
-			(int) $buffer[6],							// status
-			(int) $buffer[7],							// size
-			$smcFunc['htmlspecialchars']($buffer[8]),	// referrer
-			$smcFunc['htmlspecialchars']($buffer[9]),	// useragent
-			// These fields are calc'd here...
-			$buffer[0],									// ip display
-			$req_cache[$request],                     // request type
-			$agent_cache[$user_agent],                // agent
-			$browser_cache[$user_agent],              // browser version
-			$ts,										// dt in unix epoch format
-		);
-
-		$batch_count++;
-		if ($batch_count >= $batch_size) {
-			insert_log($inserts);
-			$inserts = array();
-			$batch_count = 0;
-		}
-
-		$buffer = fgetcsv($fp, null, " ", "\"", "\\");
-	}
-
-	// Flush remaining
-	if (!empty($inserts)) {
-		insert_log($inserts);
+		yield [
+			$ip,
+			$client,
+			$requestor,
+			substr($date_part, 1),
+			substr($tz_part, 0, -1),
+			$request,
+			(int)$status,
+			(int)$size,
+			$referrer,
+			$user_agent,
+			$ip,
+			$req_cache[$request],
+			$agent_cache[$user_agent],
+			$browser_cache[$user_agent],
+			$ts,
+		];
 	}
 
 	fclose($fp);
+	unlink($filename);
 
 	return false;
+}
+
+/**
+ * Batch generator for log entries.
+ *
+ * @param Generator $generator
+ * @param int $batch_size
+ * @return Generator yields arrays of log entries
+ */
+function wala_log_batches(Generator $generator, int $batch_size = 100): Generator {
+	$batch = [];
+	foreach ($generator as $entry) {
+		$batch[] = $entry;
+		if (count($batch) >= $batch_size) {
+			yield $batch;
+			$batch = [];
+		}
+	}
+	if (!empty($batch)) {
+		yield $batch;
+	}
+}
+
+/**
+ * Insert log entries in batches only if DB type is NOT MySQL.
+ *
+ * @param string $filename
+ * @param string $db_type
+ */
+function wala_load_log_conditional(string $filename) {
+	global $smcFunc, $db_type;
+
+	$generator = wala_load_log_generator($filename);
+
+	start_transaction();
+
+	if ($db_type === 'mysql') {
+		smf_db_insert_bactches('insert',
+			'{db_prefix}wala_web_access_log',
+			array(
+				'ip_packed' => 'inet',
+				'client' => 'string-10',
+				'requestor' => 'string-10',
+				'raw_datetime' => 'string-32',
+				'raw_tz' => 'string-6',
+				'request' => 'string-255',
+				'status' => 'int',
+				'size' => 'int',
+				'referrer' => 'string-255',
+				'useragent' => 'string-255',
+				'ip_disp' => 'string-42',
+				'request_type' => 'string-15',
+				'agent' => 'string-25',
+				'browser_ver' => 'string-25',
+				'datetime' => 'int',
+			),
+			$generator,
+			array('id_entry')
+		);
+	} else {
+		// Other DB types: batch insert
+		foreach (wala_log_batches($generator, 100) as $batch) {
+			insert_log(iterator_to_array($batch));
+		}
+	}
+
+	commit();
 }
 
 /**
@@ -1275,35 +1407,6 @@ function parseApacheDateTimeImmCached($s) {
 	}
 
 	return $day_cache[$day_key] + $time_cache[$time_key];
-}
-
-/**
- * Look up the country for a packed IP using binary search (raw bytes).
- *
- * @param string $ip_packed Packed binary IP (4 or 16 bytes)
- * @param bool   $timed     Optional; if true, prints lookup time
- * @return string Country code or empty string
- */
-function binary_search_data($ip_packed, $data) {
-	$low = 0;
-	$high = count($data) - 1;
-	$output = '';
-
-	while ($low <= $high) {
-		$mid = intdiv($low + $high, 2);
-		$row = $data[$mid];
-
-		if ($ip_packed > $row['ip_to_packed']) {
-			$low = $mid + 1;
-		} elseif ($ip_packed < $row['ip_from_packed']) {
-			$high = $mid - 1;
-		} else {
-			$output = $row['output'];
-			break;
-		}
-	}
-
-	return $output;
 }
 
 /**

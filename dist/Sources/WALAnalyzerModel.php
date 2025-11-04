@@ -49,38 +49,6 @@ function commit() {
 }
 
 /**
- * truncate_dbip_asn
- *
- * @return null
- *
- */
-function truncate_dbip_asn() {
-	global $smcFunc;
-
-	$smcFunc['db_query']('', 'TRUNCATE {db_prefix}wala_dbip_asn',
-		array()
-	);
-	// Reflect status...
-	update_status('asn');
-}
-
-/**
- * truncate_dbip_country
- *
- * @return null
- *
- */
-function truncate_dbip_country() {
-	global $smcFunc;
-
-	$smcFunc['db_query']('', 'TRUNCATE {db_prefix}wala_dbip_country',
-		array()
-	);
-	// Reflect status...
-	update_status('country');
-}
-
-/**
  * truncate_members
  *
  * @return null
@@ -120,7 +88,7 @@ function truncate_web_access_log() {
  * @return null
  *
  */
-function insert_dbip_asn(&$inserts) {
+function insert_dbip_asn($inserts) {
 	global $smcFunc, $modSettings;
 
 	if (empty($inserts))
@@ -128,38 +96,25 @@ function insert_dbip_asn(&$inserts) {
 
 	// Temporarily disable query check...  Takes a MASSIVE amount of time on large inserts...
 	$modSettings['disableQueryCheck'] = '1';
+	$smcFunc['db_query']('', 'TRUNCATE {db_prefix}wala_asns');
+	$chunk = [];
 
-	$smcFunc['db_insert']('insert',
-		'{db_prefix}wala_dbip_asn',
-		array('ip_from_packed' => 'inet', 'ip_to_packed' => 'inet', 'ip_from' => 'string-42', 'ip_to' => 'string-42', 'asn' => 'string-10', 'asn_name' => 'string-255'),
-		$inserts,
-		array('ip_to_packed'),
-	);
-}
+	while (($key = key($inserts)) !== null) {
+		$value = current($inserts);
+		$chunk[] = [$key, $value];
+		next($inserts);
 
-/**
- * insert_dbip_country
- *
- * @param array $inserts
- *
- * @return null
- *
- */
-function insert_dbip_country(&$inserts) {
-	global $smcFunc, $modSettings;
-
-	if (empty($inserts))
-		return;
-
-	// Temporarily disable query check...  Takes a MASSIVE amount of time on large inserts...
-	$modSettings['disableQueryCheck'] = '1';
-
-	$smcFunc['db_insert']('insert',
-		'{db_prefix}wala_dbip_country',
-		array('ip_from_packed' => 'inet', 'ip_to_packed' => 'inet', 'ip_from' => 'string-42', 'ip_to' => 'string-42', 'country' => 'string-2'),
-		$inserts,
-		array('ip_to_packed'),
-	);
+		// If we hit the chunk size or reached the end
+		if (count($chunk) === 100 || key($inserts) === null) {
+			$smcFunc['db_insert']('insert',
+				'{db_prefix}wala_asns',
+				array('asn' => 'string-10', 'asn_name' => 'string-255'),
+				$chunk,
+				array('asn'),
+			);
+			$chunk = []; // reset for next batch
+		}
+	}
 }
 
 /**
@@ -176,204 +131,168 @@ function insert_log($inserts) {
 	// Temporarily disable query check...  Takes a MASSIVE amount of time on large inserts...
 	$modSettings['disableQueryCheck'] = '1';
 
-	$totalStart = microtime(true);
-	$totalCount = count($inserts);
-	$chunkSize = 100;
-	$chunkNum  = 0;
-
-	foreach (array_chunk($inserts, $chunkSize) as $chunk) {
-		$chunkNum++;
-		$start = microtime(true);
-
-		smf_db_insert('insert',
-			'{db_prefix}wala_web_access_log',
-			array(
-				'ip_packed'     => 'inet',
-				'client'        => 'string-10',
-				'requestor'     => 'string-10',
-				'raw_datetime'  => 'string-32',
-				'raw_tz'        => 'string-6',
-				'request'       => 'string-255',
-				'status'        => 'int',
-				'size'          => 'int',
-				'referrer'      => 'string-255',
-				'useragent'     => 'string-255',
-				'ip_disp'       => 'string-42',
-				'request_type'  => 'string-15',
-				'agent'         => 'string-25',
-				'browser_ver'   => 'string-25',
-				'datetime'      => 'int',
-			),
-			$chunk,
-			array('id_entry')
-		);
-	}
-
-	$totalElapsed = microtime(true) - $totalStart;
-	logDbInsertTime('wala_web_access_log', $totalElapsed, $totalCount);
-
-	$smcFunc['db_query']('', 'TRUNCATE {db_prefix}wala_web_access_log',
-		array()
-	);
-	$start = microtime(true);
-
-	smf_db_insert_multi('insert',
+	$smcFunc['db_insert']('insert',
 		'{db_prefix}wala_web_access_log',
 		array(
-			'ip_packed'     => 'inet',
-			'client'        => 'string-10',
-			'requestor'     => 'string-10',
-			'raw_datetime'  => 'string-32',
-			'raw_tz'        => 'string-6',
-			'request'       => 'string-255',
-			'status'        => 'int',
-			'size'          => 'int',
-			'referrer'      => 'string-255',
-			'useragent'     => 'string-255',
-			'ip_disp'       => 'string-42',
-			'request_type'  => 'string-15',
-			'agent'         => 'string-25',
-			'browser_ver'   => 'string-25',
-			'datetime'      => 'int',
+			'ip_packed' => 'inet',
+			'client' => 'string-10',
+			'requestor' => 'string-10',
+			'raw_datetime' => 'string-32',
+			'raw_tz' => 'string-6',
+			'request' => 'string-255',
+			'status' => 'int',
+			'size' => 'int',
+			'referrer' => 'string-255',
+			'useragent' => 'string-255',
+			'ip_disp' => 'string-42',
+			'request_type' => 'string-15',
+			'agent' => 'string-25',
+			'browser_ver' => 'string-25',
+			'datetime' => 'int',
 		),
 		$inserts,
 		array('id_entry')
 	);
+	return;
+	$affected_rows = $smcFunc['db_affected_rows']();
 
-	$elapsed = microtime(true) - $start;
-	logDbInsertTime('wala_web_access_log', $elapsed, count($inserts));
-	$smcFunc['db_query']('', 'TRUNCATE {db_prefix}wala_web_access_log',
-		array()
-	);
-	$start = microtime(true);
+	// Now get warnings
+	$request = $smcFunc['db_query']('', 'SHOW WARNINGS', array());
+	$warnings = array();
 
-	smf_db_insert_mulbti('insert',
-		'{db_prefix}wala_web_access_log',
-		array(
-			'ip_packed'     => 'inet',
-			'client'        => 'string-10',
-			'requestor'     => 'string-10',
-			'raw_datetime'  => 'string-32',
-			'raw_tz'        => 'string-6',
-			'request'       => 'string-255',
-			'status'        => 'int',
-			'size'          => 'int',
-			'referrer'      => 'string-255',
-			'useragent'     => 'string-255',
-			'ip_disp'       => 'string-42',
-			'request_type'  => 'string-15',
-			'agent'         => 'string-25',
-			'browser_ver'   => 'string-25',
-			'datetime'      => 'int',
-		),
-		$inserts,
-		array('id_entry')
-	);
-
-	$elapsed = microtime(true) - $start;
-	logDbInsertTime('wala_web_access_log', $elapsed, count($inserts));
-}
-
-/**
- * Helper to record or print timing info.
- */
-function logDbInsertTime($table, $seconds, $count) {
-	$perRow = $count ? ($seconds / $count) : 0;
-	$formatted = sprintf(
-		"[DB] Inserted %d rows into %s in %.4f sec (%.6f sec/row)\n",
-		$count, $table, $seconds, $perRow
-	);
-	// You can change this to file_put_contents or integrate with your logger
-	echo $formatted;
-}
-
-
-/**
- * get_asns
- *
- * Fetch IP ranges and ASNs between a given min/max packed IP range.
- *
- * @param string $min_ip_packed Binary (inet_pton) lower bound
- * @param string $max_ip_packed Binary (inet_pton) upper bound
- * @return array Array of ['ip_from_packed' => binary, 'ip_to_packed' => binary, 'output' => string]
- */
-function get_asns($min_ip_packed, $max_ip_packed) {
-	return fetch_range_data('asn', $min_ip_packed, $max_ip_packed);
-}
-
-/**
- * get_countries
- *
- * Fetch IP ranges and countries between a given min/max packed IP range.
- *
- * @param string $min_ip_packed Binary (inet_pton) lower bound
- * @param string $max_ip_packed Binary (inet_pton) upper bound
- * @return array Array of ['ip_from_packed' => binary, 'ip_to_packed' => binary, 'output' => string]
- */
-function get_countries($min_ip_packed, $max_ip_packed) {
-	return fetch_range_data('country', $min_ip_packed, $max_ip_packed);
-}
-
-/**
- * fetch_range_data
- *
- * Fetch IP ranges between a given min/max packed IP range.
- *
- * @param string $min_ip_packed Binary (inet_pton) lower bound
- * @param string $max_ip_packed Binary (inet_pton) upper bound
- * @return array Array of ['ip_from_packed' => binary, 'ip_to_packed' => binary, 'output' => string]
- */
-function fetch_range_data($type, $min_ip_packed, $max_ip_packed) {
-	global $smcFunc, $db_type;
-
-	$min_hex = bin2hex($min_ip_packed);
-	$max_hex = bin2hex($max_ip_packed);
-	$min_disp = inet_ntop($min_ip_packed);
-	$max_disp = inet_ntop($max_ip_packed);
-	$min_length = strlen($min_ip_packed);
-	$max_length = strlen($max_ip_packed);
-
-	// Build SQL depending on DB engine
-	if ($db_type === 'postgresql') {
-		$sql = '
-			SELECT ip_from_packed, ip_to_packed, ' . $type . ' AS output
-			FROM {db_prefix}wala_dbip_' . $type . '
-			WHERE ip_to_packed >= \'' . $min_disp . '\'
-				AND ip_from_packed <= \'' . $max_disp . '\'
-			ORDER BY ip_to_packed';
-	} else {
-		// MySQL (VARBINARY)
-		$sql = '
-			SELECT ip_from_packed, ip_to_packed, ' . $type . ' AS output
-			FROM {db_prefix}wala_dbip_' . $type . '
-			WHERE ip_to_packed >= UNHEX(\'' . $min_hex . '\')
-				AND ip_from_packed <= UNHEX(\'' . $max_hex . '\')
-				AND LENGTH(ip_from_packed) = ' . $max_length . '
-			ORDER BY ip_to_packed';
+	while ($row = $smcFunc['db_fetch_assoc']($request)) {
+		$warnings[] = $row;
 	}
-	var_dump($sql);
 
-	$start = microtime(true);
+	$smcFunc['db_free_result']($request);
 
-	$result = $smcFunc['db_query']('', $sql);
+	// Optional: log or display warnings
+	foreach ($warnings as $w) {
+		trigger_error("MySQL Warning: {$w['Level']} [{$w['Code']}] {$w['Message']}");
+	}
 
-	$total = microtime(true) - $start;
-	printf("Qeury took %.4f seconds\n", $total);
-	// Under SMF, PG & MySQL behave differently with inet types.  MySQL reads binary, but wants a display upon insert.
-	// PG always reads & writes display.
-	// WALA uses binary on reads, so needs to xlate pg on reads here.
+	return $affected_rows;
+}
 
-	$all_rows = [];
-	while ($row = $smcFunc['db_fetch_assoc']($result)) {
-		if ($db_type === 'postgresql') {
-			$row['ip_from_packed'] = inet_pton($row['ip_from_packed']);
-			$row['ip_to_packed']   = inet_pton($row['ip_to_packed']);
+/**
+ * Efficiently insert multiple rows into a MySQL table using prepared statements.
+ *
+ * This function is optimized for bulk inserts from large datasets or generators.
+ * It minimizes prepare overhead by creating at most two prepared statements:
+ * one for full-size batches and one for any remaining partial batch.
+ *
+ * @param string      $method         One of 'insert', 'replace', or 'ignore'.
+ * @param string      $table          Table name; may include {db_prefix}.
+ * @param array       $columns        Column definitions in the form name => type.
+ *                                   Supported base types: int, float, string, text,
+ *                                   date, time, datetime, inet.
+ *                                   Use "string-N" to limit VARCHAR input to N chars.
+ * @param iterable    $data           Iterable rows to insert (array of arrays or generator).
+ * @param array       $keys           Unused (kept for compatibility with SMF core).
+ * @param mysqli|null $connection     Optional mysqli connection; defaults to $db_connection.
+ * @param int         $rows_per_batch Number of rows per batch for prepared execution (default 100).
+ */
+function smf_db_insert_bactches($method, $table, $columns, $data, $keys = [], $connection = null, $rows_per_batch = 100)
+{
+	global $db_connection, $db_prefix;
+
+	$conn = $connection ?? $db_connection;
+	$method = strtolower($method);
+	$table = str_replace('{db_prefix}', $db_prefix, $table);
+	$query_title = $method === 'replace' ? 'REPLACE' : ($method === 'ignore' ? 'INSERT IGNORE' : 'INSERT');
+
+	// Map SMF types to mysqli bind types
+	$param_type_map = [
+		'int' => 'i',
+		'float' => 'd',
+		'string' => 's',
+		'text' => 's',
+		'date' => 's',
+		'time' => 's',
+		'datetime' => 's',
+		'inet' => 's',
+	];
+	$per_row_types = '';
+
+	// Build column string and single-row placeholders
+	$col_names = array_keys($columns);
+	$col_string = '`' . implode('`,`', $col_names) . '`';
+	$placeholders = [];
+
+	foreach ($columns as $col => $type) {
+		$param_type = strtok($type, '-');
+
+		if (!isset($param_type_map[$param_type]))
+			smf_db_error_backtrace('Invalid type for ' . $col . ': ' . $type, '', E_USER_ERROR, __FILE__, __LINE__);
+
+		$max_len = strtok('-');
+		$per_row_types .= $param_type_map[$param_type];
+
+		if ($param_type === 'string' && $max_len) {
+			$placeholders[] = "SUBSTRING(?, 1, $max_len)";
+		} elseif ($type === 'inet') {
+			$placeholders[] = 'INET6_ATON(?)';
+		} else {
+			$placeholders[] = '?';
 		}
-		$all_rows[] = $row;
+	}
+	$row_placeholder = '(' . implode(', ', $placeholders) . ')';
+
+	$sql = "$query_title INTO $table ($col_string) VALUES " .
+		substr(str_repeat("$row_placeholder,", $rows_per_batch), 0, -1);
+	$stmt = $conn->prepare($sql);
+	if (!$stmt)
+		smf_db_error_backtrace('Prepare failed: ' . $conn->error, '', E_USER_ERROR, __FILE__, __LINE__);
+
+	$stmt_partial = null;
+	$bind_types = str_repeat($per_row_types, $rows_per_batch);
+
+	// === Stream directly ===
+	$row_counter = 0;
+	$param_index = 0;
+	$bind_values = array_fill(0, $rows_per_batch * count($columns), '');
+	$bound = false;
+
+	foreach ($data as $row) {
+		foreach ($row as $v)
+			$bind_values[$param_index++] = $v;
+
+		$row_counter++;
+
+		if ($row_counter === $rows_per_batch) {
+			if (!$bound) {
+				$stmt->bind_param($bind_types, ...$bind_values);
+				$bound = true;
+			}
+
+			if (!$stmt->execute())
+				smf_db_error_backtrace('Execute failed: ' . $stmt->error, '', E_USER_ERROR, __FILE__, __LINE__);
+
+			// Reset accumulators
+			$row_counter = 0;
+			$param_index = 0;
+		}
 	}
 
-	$smcFunc['db_free_result']($result);
-	return $all_rows;
+	$stmt->close();
+
+	// === Final leftover rows ===
+	if ($row_counter !== 0) {
+		$sql = "$query_title INTO $table ($col_string) VALUES " .
+			substr(str_repeat("$row_placeholder,", $row_counter), 0, -1);
+		$stmt = $conn->prepare($sql);
+
+		if (!$stmt)
+			smf_db_error_backtrace('Prepare failed: ' . $conn->error, '', E_USER_ERROR, __FILE__, __LINE__);
+
+		$bind_types = str_repeat($per_row_types, $row_counter);
+		$stmt->bind_param($bind_types, ...array_slice($bind_values, 0, $row_counter * count($columns)));
+
+		if (!$stmt->execute())
+			smf_db_error_backtrace('Execute failed: ' . $stmt->error, '', E_USER_ERROR, __FILE__, __LINE__);
+
+		$stmt->close();
+	}
 }
 
 /**
@@ -680,7 +599,7 @@ function update_web_access_log2(array $entries) {
 
 	foreach ($entries as $row) {
 		$id = (int)$row['id_entry'];
-		$asn = $smcFunc['db_escape_string']($row['asn']);
+		$asn = unpack('N', $row['asn'])[1];
 		$country = $smcFunc['db_escape_string']($row['country']);
 		$username = $smcFunc['db_escape_string']($row['username']);
 
