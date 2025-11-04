@@ -146,9 +146,10 @@ async function walaUpload(file_type) {
 	let error_found = false;
 	let importedChunks = 0;
 
-	for (let batchStart = 1; batchStart <= totalChunks; batchStart += CONCURRENCY) {
-		// Build one batch of up to CONCURRENCY requests
-		const batch = [];
+	if (file_type === 'log') {
+		for (let batchStart = 1; batchStart <= totalChunks; batchStart += CONCURRENCY) {
+			// Build one batch of up to CONCURRENCY requests
+			const batch = [];
 		for (let j = 0; j < CONCURRENCY; j++) {
 			const index = batchStart + j;
 			if (index > totalChunks) break;
@@ -190,7 +191,8 @@ async function walaUpload(file_type) {
 		));
 
 		if (error_found) {
-			break;
+				break;
+			}
 		}
 	}
 
