@@ -318,52 +318,6 @@ async function walaMemberSync() {
 		}
 	}
 
-	// Update member attributes
-	index = 0;
-	totalChunks = 1;
-	document.getElementById(file_type_status).textContent = Math.round(100*index/totalChunks) + wala_str_attribution;
-	if (error_found === false) {
-		while (index < totalChunks) {
-			const formData = new FormData();
-			formData.append('index', index);
-			formData.append(smf_session_var, smf_session_id);
-			try {
-				// Note xml must be passed otherwise SMF will return a normal http template
-				const response = await fetch(smf_scripturl + '?action=xmlhttp;sa=walamattr;xml', {
-					method: 'POST',
-					credentials: 'same-origin',
-					body: formData,
-				});
-				const result = await response.text();
-				regex_match = result.match(chunkct_regex);
-				if (response.ok && (regex_match !== null)) {
-					// Get the number of csv chunks
-					totalChunks = regex_match[1];
-					document.getElementById(file_type_status).textContent = Math.round(100*index/totalChunks) + wala_str_attribution;
-				} else {
-					console.error(wala_str_failed + ': ' + result);
-					new smc_Popup({
-						heading: wala_str_loader,
-						content: wala_str_failed + ': ' + result,
-						icon_class: 'main_icons error',
-					});
-					error_found = true;
-					break;
-				}
-			} catch (error) {
-				console.error(wala_str_failed + ': ' + error);
-				new smc_Popup({
-					heading: wala_str_loader,
-					content: wala_str_failed,
-					icon_class: 'main_icons error',
-				});
-				error_found = true;
-				break;
-			}
-			index++;
-		}
-	}
-
 	// Last but not least, hide the spinner...
 	document.getElementById(file_type_wheel).style.visibility = 'hidden';
 	if (error_found === false) {
