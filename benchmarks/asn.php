@@ -17,8 +17,7 @@ function load_asn_cache_from_gz($filename, $record_size) {
 
 			$ip_from_str = strtok($line, ',');
 			$ip_to_str = strtok(',');
-			$asn_num_str = strtok(',');
-			$asn_name = strtok(',');
+			$asn_num = strtok(',');
 
 			$ip_from = @inet_pton($ip_from_str);
 			$ip_to = @inet_pton($ip_to_str);
@@ -33,13 +32,10 @@ function load_asn_cache_from_gz($filename, $record_size) {
 				continue;
 			}
 
-			// ASN number as unsigned 32-bit int
-			$asn_num = (int)$asn_num_str;
-
 				$asn_cache[] = [
-					'ip_from' => $ip_from,
-					'ip_to' => $ip_to,
-					'asn' => $asn_num
+					0 => $ip_from,
+					1 => $ip_to,
+					2 => $asn_num
 				];
 			}
 		gzclose($fp);
@@ -47,9 +43,9 @@ function load_asn_cache_from_gz($filename, $record_size) {
 
 	//~ // Sort by IP version then ip_to
 	//~ usort($asn_cache, function ($a, $b) {
-		//~ $lenCmp = strlen($a['ip_to']) <=> strlen($b['ip_to']);
+		//~ $lenCmp = strlen($a[1]) <=> strlen($b[1]);
 		//~ if ($lenCmp !== 0) return $lenCmp;
-		//~ return strcmp($a['ip_to'], $b['ip_to']);
+		//~ return strcmp($a[1], $b[1]);
 	//~ });
 }
 
@@ -70,12 +66,12 @@ function get_asn($ip_packed) {
 		$mid = ($low + $high) >> 1;
 		$entry = $asn_cache[$mid];
 
-		if ($ip_packed > $entry['ip_to']) {
+		if ($ip_packed > $entry[1]) {
 			$low = $mid + 1;
-		} elseif ($ip_packed < $entry['ip_from']) {
+		} elseif ($ip_packed < $entry[0]) {
 			$high = $mid - 1;
 		} else {
-			return $entry['asn']; // match
+			return $entry[2]; // match
 		}
 	}
 
@@ -166,7 +162,7 @@ function assertSameOrder() {
 	$count_array = count($asn_cache);
 
 	if ($count_array > 0) {
-		$len = strlen($asn_cache[0]['ip_from']);
+		$len = strlen($asn_cache[0][0]);
 	}
 
 	$record_size = $len * 2 + 4;
@@ -183,9 +179,9 @@ function assertSameOrder() {
 		$cc_b = unpack('N', substr($asn_cache_bin, $i + $len * 2, 4))[1];
 
 		$a = $asn_cache[$j];
-		if ($ip_from_b !== $a['ip_from'] || $ip_to_b !== $a['ip_to'] || $cc_b !== $a['asn']) {
+		if ($ip_from_b !== $a[0] || $ip_to_b !== $a[1] || $cc_b != $a[2]) {
 			echo "❌ Mismatch at index $i\n";
-			echo " Array: " . inet_ntop($a['ip_from']) . " → " . inet_ntop($a['ip_to']) . " : {$a['asn']}\n";
+			echo " Array: " . inet_ntop($a[0]) . " → " . inet_ntop($a[1]) . " : {$a[2]}\n";
 			echo " Binary: " . inet_ntop($ip_from_b) . " → " . inet_ntop($ip_to_b) . " : $cc_b\n";
 			return false;
 		}
@@ -281,7 +277,7 @@ $hits = 0;
 for ($i = 0; $i < $n; $i++) {
 	$ip = $ipv6_test ? randomIPv6() : randomIPv4();
 	$packed = inet_pton($ip);
-	if (get_asn_bin($packed) === get_asn($packed)) $hits++;
+	if (get_asn_bin($packed) == get_asn($packed)) $hits++;
 }
 $elapsed = microtime(true) - $start;
 echo "Checked for equal results for $n IPs in " . round($elapsed, 3) . "s (" .
@@ -306,7 +302,7 @@ function buildJumpTable($asn_cache_bin, $len) {
 	$record_count = (int)(strlen($asn_cache_bin) / $record_size);
 
 	$table_size = $len === 4 ? 256 : 65536;
-	$jump_table = array_fill(0, $table_size, $record_count); // default to end
+	$jump_table = array_fill(0, $table_size, $record_count - 1); // default to end
 
 	$prefix = 0;
 	for ($i = 0, $j = 0; $i < $record_count; $i++, $j += $record_size) {
@@ -417,7 +413,7 @@ for ($i = 0,$e=0; $i < $n; $i++) {
 	$cc1 = get_asn_bin_jump($packed, $jump_table);
 	$cc2 = get_asn($packed);
 	if ($cc1 !== $cc2) {
-		echo "Mismatch at $ip → jump=$cc1, normal=$cc2\n";
+		echo "Mismatch at $ip → jump=$cc1 (".gettype($cc1)."), normal=$cc2 (".gettype($cc2).")\n";
 		if(++$e===9 )
 		break;
 	}
