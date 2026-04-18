@@ -51,7 +51,6 @@ if ($ip_from_str === false || $ip_to_str === false || $country === false) contin
 	//~ });
 }
 
-
 /**
  * Binary search the DBIP cache for a packed IP.
  *
@@ -362,56 +361,134 @@ function get_country_bin_jump(string $ip_packed, array $jump_table): string {
 	return '';
 }
 
+function section(string $title): void {
+	echo "\n=== $title ===\n";
+}
+
+function status(string $label, $value): void {
+	echo str_pad($label, 28) . ": $value\n";
+}
+
+function result(string $label, float $elapsed, int $ops, int $hits): void {
+	echo str_pad($label, 28) . ": "
+		. round($elapsed, 3) . "s | "
+		. number_format((int)($ops / $elapsed)) . " ops/sec | "
+		. "hits=$hits\n";
+}
+
 // Use the same ord cache
 global $ord_cache;
 
 $ord_cache = range("\0", "\xFF");
 $ord_cache = array_flip($ord_cache);
 
+section("ARRAY CACHE LOAD");
+
+memory_reset_peak_usage();
+$start = microtime(true);
+
+load_country_cache_from_gz("dbip-country-lite-2025-10.csv.gz", $ipv6_test ? 16 : 4);
+
+status("Load time", round(microtime(true)-$start, 3) . "s");
+status("Peak memory", round(memory_get_peak_usage(true)/1048576, 2) . " MB");
+
+$ip = "8.8.8.8";
+status("Test lookup", "$ip → " . get_country(inet_pton($ip)));
+
+$start = microtime(true);
+$country_cache_eytz = buildCountryCacheEytz($country_cache);
+echo "Eytzinger built in " . round(microtime(true)-$start, 3) . "s\n";
+
+section("BINARY CACHE LOAD");
+
 memory_reset_peak_usage();
 $mem = memory_get_peak_usage();
 $start = microtime(true);
+
+load_country_cache_bin("dbip-country-lite-2025-10.csv.gz", $ipv6_test ? 16 : 4);
+
+status("Load time", round(microtime(true)-$start, 3) . "s");
+status("Extra memory", round((memory_get_peak_usage() - $mem) / 1048576, 2) . " MB");
+
+assertSameOrder();
+
+section("LOOKUP BENCHMARK");
+
+$start = microtime(true);
+$hits = 0;
+for ($i = 0; $i < $n; $i++) {
+	$ip = $ipv6_test ? randomIPv6() : randomIPv4();
+	if (get_country(inet_pton($ip)) !== '') $hits++;
+}
+result("Array lookup", microtime(true) - $start, $n, $hits);
+
+$start = microtime(true);
+$hits = 0;
+for ($i = 0; $i < $n; $i++) {
+	$ip = $ipv6_test ? randomIPv6() : randomIPv4();
+	if (get_country_bin(inet_pton($ip)) !== '') $hits++;
+}
+result("Binary lookup", microtime(true) - $start, $n, $hits);
+
+section("CONSISTENCY CHECK");
+
+$start = microtime(true);
+$matches = 0;
+
+for ($i = 0; $i < $n; $i++) {
+	$ip = $ipv6_test ? randomIPv6() : randomIPv4();
+	$packed = inet_pton($ip);
+
+	if (get_country_bin($packed) === get_country($packed)) {
+		$matches++;
+	}
+}
+
+result("Array vs Binary", microtime(true) - $start, $n, $matches);
+
+section("JUMP TABLE");
+
+memory_reset_peak_usage();
+$mem = memory_get_peak_usage();
+$start = microtime(true);
+
 $jump_table = buildJumpTable($country_cache_bin, $ipv6_test ? 16 : 4);
-echo "Loaded in " . round(microtime(true)-$start, 3) . "s\n";
-echo "Peak memory: " . round((memory_get_peak_usage() - $mem) / 1024, 2) . " KB\n";
+
+status("Build time", round(microtime(true)-$start, 3) . "s");
+status("Memory used", round((memory_get_peak_usage() - $mem) / 1024, 2) . " KB");
 
 $ip = "111.40.184.208";
-$packed = inet_pton($ip);
-$country = get_country_bin_jump($packed, $jump_table);
-echo "$ip → $country\n";
+status("Test lookup", "$ip → " . get_country_bin_jump(inet_pton($ip), $jump_table));
+
+section("JUMP LOOKUP BENCHMARK");
 
 $start = microtime(true);
 $hits = 0;
+
+for ($i = 0; $i < $n; $i++) {
+	$ip = $ipv6_test ? randomIPv6() : randomIPv4();
+	if (get_country_bin_jump(inet_pton($ip), $jump_table) !== '') $hits++;
+}
+
+result("Jump lookup", microtime(true) - $start, $n, $hits);
+
+section("MISMATCH CHECK");
+
+$errors = 0;
+
 for ($i = 0; $i < $n; $i++) {
 	$ip = $ipv6_test ? randomIPv6() : randomIPv4();
 	$packed = inet_pton($ip);
-	$cc = get_country_bin_jump($packed, $jump_table);
-	if ($cc !== '') $hits++;
-}
-$elapsed = microtime(true) - $start;
-echo "Looked up $n IPs in " . round($elapsed, 3) . "s (" .
-	 round($n / $elapsed) . " lookups/sec, hits=$hits)\n";
 
-$start = microtime(true);
-$hits = 0;
-for ($i = 0; $i < $n; $i++) {
-	$ip = $ipv6_test ? randomIPv6() : randomIPv4();
-	$packed = inet_pton($ip);
-	if (get_country_bin_jump($packed, $jump_table) === get_country($packed)) $hits++;
-}
-$elapsed = microtime(true) - $start;
-echo "Checked for equal results for $n IPs in " . round($elapsed, 3) . "s (" .
-	 round($n / $elapsed) . " lookups/sec, hits=$hits)\n";
-
-
-for ($i = 0,$e=0; $i < $n; $i++) {
-	$ip = $ipv6_test ? randomIPv6() : randomIPv4();
-	$packed = inet_pton($ip);
 	$cc1 = get_country_bin_jump($packed, $jump_table);
 	$cc2 = get_country($packed);
+
 	if ($cc1 !== $cc2) {
-		echo "Mismatch at $ip → jump=$cc1, normal=$cc2\n";
-		if(++$e===9 )
-		break;
+		echo "Mismatch: $ip | jump=$cc1 | array=$cc2\n";
+		if (++$errors >= 10) break;
 	}
+}
+
+if ($errors === 0) {
+	echo "No mismatches found.\n";
 }
