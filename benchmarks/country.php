@@ -79,6 +79,55 @@ function get_country($ip_packed) {
 	return '';
 }
 
+global $country_cache_eytz;
+$country_cache_eytz = [];
+
+function buildCountryCacheEytz(array $cache): array {
+	$n = count($cache);
+	$out = array_fill(0, $n, null);
+
+	$i = 0;
+
+	$build = function ($pos) use (&$build, &$cache, &$out, $n, &$i) {
+		if ($pos >= $n) return;
+
+		$build(2 * $pos + 1);
+
+		$out[$pos] = $cache[$i++];
+
+		$build(2 * $pos + 2);
+	};
+
+	$build(0);
+
+	return $out;
+}
+
+function get_country_eytz(string $ip_packed): string {
+	global $country_cache_eytz;
+
+	$i = 0;
+	$n = count($country_cache_eytz);
+
+	while ($i < $n) {
+		$e = $country_cache_eytz[$i];
+
+		if ($ip_packed < $e['ip_from']) {
+			$i = 2 * $i + 1;
+			continue;
+		}
+
+		if ($ip_packed > $e['ip_to']) {
+			$i = 2 * $i + 2;
+			continue;
+		}
+
+		return $e['country'];
+	}
+
+	return '';
+}
+
 global $country_cache_bin;
 $country_cache_bin = '';
 
@@ -361,6 +410,127 @@ function get_country_bin_jump(string $ip_packed, array $jump_table): string {
 	return '';
 }
 
+function buildBucketsDuplicated(string $blob, int $len): array {
+	global $ord_cache;
+
+	$record_size = $len * 2 + 2;
+	$record_count = intdiv(strlen($blob), $record_size);
+
+	$buckets = [];
+
+	for ($i = 0; $i < $record_count; $i++) {
+		$off = $i * $record_size;
+
+		$ip_from = substr($blob, $off, $len);
+		$ip_to   = substr($blob, $off + $len, $len);
+
+		$p_start = $ord_cache[$ip_from[0]];
+		$p_end   = $ord_cache[$ip_to[0]];
+
+		if ($len !== 4) {
+			$p_start = ($p_start << 8) | $ord_cache[$ip_from[1]];
+			$p_end   = ($p_end << 8) | $ord_cache[$ip_to[1]];
+		}
+
+		$record = substr($blob, $off, $record_size);
+
+		for ($p = $p_start; $p <= $p_end; $p++) {
+			if (!isset($buckets[$p])) {
+				$buckets[$p] = '';
+			}
+			$buckets[$p] .= $record;
+		}
+	}
+
+	return $buckets;
+}
+
+function eytzingerReorderBlob(string $blob, int $record_size): string {
+	$n = intdiv(strlen($blob), $record_size);
+	if ($n <= 1) return $blob;
+
+	$out = str_repeat("\0", $n * $record_size);
+
+	$i = 0;
+
+	$build = function ($pos) use (&$build, &$blob, &$out, &$i, $n, $record_size) {
+		if ($pos >= $n) return;
+
+		$build(2 * $pos + 1);
+
+		// copy record i → position pos
+		$src = $i * $record_size;
+		$dst = $pos * $record_size;
+
+		for ($k = 0; $k < $record_size; $k++) {
+			$out[$dst + $k] = $blob[$src + $k];
+		}
+
+		$i++;
+
+		$build(2 * $pos + 2);
+	};
+
+	$build(0);
+
+	return $out;
+}
+
+function buildBucketsEytzinger(string $blob, int $len): array {
+	$record_size = $len * 2 + 2;
+
+	// step 1: duplicate into buckets
+	$buckets = buildBucketsDuplicated($blob, $len);
+
+	// step 2: reorder each bucket in-place style
+	foreach ($buckets as $p => $b) {
+		$buckets[$p] = eytzingerReorderBlob($b, $record_size);
+	}
+
+	return $buckets;
+}
+
+function get_country_jump_eytz(string $ip_packed, array $jump_table, array $buckets): string {
+	global $ord_cache;
+
+	$len = strlen($ip_packed);
+
+	// prefix extraction
+	$prefix = ($len === 4)
+		? $ord_cache[$ip_packed[0]]
+		: (($ord_cache[$ip_packed[0]] << 8) | $ord_cache[$ip_packed[1]]);
+
+	if (!isset($buckets[$prefix])) {
+		return '';
+	}
+
+	$blob = $buckets[$prefix];
+	$record_size = $len * 2 + 2;
+	$n = strlen($blob) / $record_size;
+
+	// Eytzinger search inside bucket
+	$i = 0;
+
+	while ($i < $n) {
+		$off = $i * $record_size;
+
+		// Compare against ip_from (lower bound)
+		if (substr_compare($blob, $ip_packed, $off, $len) > 0) {
+			// ip < from → go left
+			$i = 2 * $i + 1;
+		}
+		// Compare against ip_to (upper bound)
+		elseif (substr_compare($blob, $ip_packed, $off + $len, $len) < 0) {
+			// ip > to → go right
+			$i = 2 * $i + 2;
+		} else {
+			return substr($blob, $off + $len * 2, 2);
+		}
+	}
+
+	return '';
+}
+
 function section(string $title): void {
 	echo "\n=== $title ===\n";
 }
@@ -395,9 +565,15 @@ status("Peak memory", round(memory_get_peak_usage(true)/1048576, 2) . " MB");
 $ip = "8.8.8.8";
 status("Test lookup", "$ip → " . get_country(inet_pton($ip)));
 
+section("EYTZINGER CACHE LOAD");
+
+memory_reset_peak_usage();
+$mem = memory_get_peak_usage();
+
 $start = microtime(true);
-$country_cache_eytz = buildCountryCacheEytz($country_cache);
-echo "Eytzinger built in " . round(microtime(true)-$start, 3) . "s\n";
+$country_cache_eytz = buildCountryCacheEytz($country_cache); 
+status("Load time", round(microtime(true)-$start, 3) . "s");
+status("Extra memory", round((memory_get_peak_usage() - $mem) / 1048576, 2) . " MB");
 
 section("BINARY CACHE LOAD");
 
@@ -424,6 +600,20 @@ result("Array lookup", microtime(true) - $start, $n, $hits);
 
 $start = microtime(true);
 $hits = 0;
+
+for ($i = 0; $i < $n; $i++) {
+	$ip = $ipv6_test ? randomIPv6() : randomIPv4();
+	$packed = inet_pton($ip);
+
+	if (get_country_eytz($packed) !== '') {
+		$hits++;
+	}
+}
+
+result("Eytzinger lookup", microtime(true) - $start, $n, $hits);
+
+$start = microtime(true);
+$hits = 0;
 for ($i = 0; $i < $n; $i++) {
 	$ip = $ipv6_test ? randomIPv6() : randomIPv4();
 	if (get_country_bin(inet_pton($ip)) !== '') $hits++;
@@ -445,6 +635,22 @@ for ($i = 0; $i < $n; $i++) {
 }
 
 result("Array vs Binary", microtime(true) - $start, $n, $matches);
+
+section("EYTZINGER CONSISTENCY CHECK");
+
+$start = microtime(true);
+$hits = 0;
+
+for ($i = 0; $i < $n; $i++) {
+	$ip = $ipv6_test ? randomIPv6() : randomIPv4();
+	$packed = inet_pton($ip);
+
+	if (get_country_eytz($packed) === get_country($packed)) {
+		$hits++;
+	}
+}
+
+result("Eytzinger vs Array", microtime(true) - $start, $n, $hits);
 
 section("JUMP TABLE");
 
@@ -472,6 +678,58 @@ for ($i = 0; $i < $n; $i++) {
 
 result("Jump lookup", microtime(true) - $start, $n, $hits);
 
+section("HYBRID JUMP + EYTZINGER BUILD");
+
+$len = $ipv6_test ? 16 : 4;
+$record_size = $len * 2 + 2;
+$record_count = strlen($country_cache_bin) / $record_size;
+
+memory_reset_peak_usage();
+$mem = memory_get_peak_usage();
+$start = microtime(true);
+
+$buckets = buildBucketsEytzinger($country_cache_bin, $len);
+
+status("Build time", round(microtime(true)-$start, 3) . "s");
+status("Peak memory", round((memory_get_peak_usage()-$mem)/1048576, 2) . " MB");
+echo "Buckets: " . count($buckets) . "\n";
+
+section("HYBRID LOOKUP BENCHMARK");
+
+$start = microtime(true);
+$hits = 0;
+
+for ($i = 0; $i < $n; $i++) {
+	$ip = $ipv6_test ? randomIPv6() : randomIPv4();
+	$packed = inet_pton($ip);
+
+	if (get_country_jump_eytz($packed, $jump_table, $buckets) !== '') {
+		$hits++;
+	}
+}
+
+result("Jump+Eytzinger", microtime(true) - $start, $n, $hits);
+
+section("MISMATCH CHECK");
+
+$errors = 0;
+
+for ($i = 0; $i < $n; $i++) {
+	$ip = $ipv6_test ? randomIPv6() : randomIPv4();
+	$packed = inet_pton($ip);
+
+	$cc1 = get_country_jump_eytz($packed, $jump_table, $buckets);
+	$cc2 = get_country($packed);
+
+	if ($cc1 !== $cc2) {
+		echo "Mismatch: $ip | jump=$cc1 | array=$cc2\n";
+		if (++$errors >= 10) break;
+	}
+}
+
+if ($errors === 0) {
+	echo "No mismatches found.\n";
+}
 section("MISMATCH CHECK");
 
 $errors = 0;
